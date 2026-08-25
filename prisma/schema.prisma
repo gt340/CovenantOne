@@ -1,0 +1,1100 @@
+// =============================================================================
+// PLATFORM DATA MODEL — PHASE 1
+// =============================================================================
+// This is the single source of truth for the database schema. The SQL file at
+// prisma/migrations/0001_init/migration.sql is a hand-authored mirror of this
+// file (see ARCHITECTURE.md for why, and scripts/validate_schema_consistency.py
+// for the automated check that keeps them in sync).
+//
+// Design conventions used throughout:
+//   - Every table has an opaque UUID primary key (`id`).
+//   - Every table has `createdAt`; mutable tables also have `updatedAt`.
+//   - Append-only tables (AuditLog, ModeratorAction, RelationshipStage history,
+//     Donation, FundDisbursement) are never updated or deleted by app code.
+//   - Personally identifying contact info (email, phone) lives ONLY in the
+//     verification/auth tables, never in MemberProfile, so that "public-facing"
+//     queries can never accidentally leak it. See SECURITY.md.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// ENUMS
+// -----------------------------------------------------------------------------
+
+enum Role {
+  MEMBER
+  MENTOR
+  MODERATOR
+  SAFETY_MODERATOR
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  DEACTIVATED_BY_USER
+  PENDING_DELETION
+}
+
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum IdentityVerificationMethod {
+  GOVERNMENT_ID
+  VIDEO_VERIFICATION
+  THIRD_PARTY_KYC
+}
+
+enum FaithImportance {
+  CENTRAL
+  VERY_IMPORTANT
+  IMPORTANT
+  EXPLORING
+}
+
+enum EducationLevel {
+  HIGH_SCHOOL
+  SOME_COLLEGE
+  ASSOCIATE
+  BACHELORS
+  MASTERS
+  DOCTORATE
+  TRADE_VOCATIONAL
+  OTHER
+}
+
+enum MarriageTimeframe {
+  WITHIN_A_YEAR
+  ONE_TO_TWO_YEARS
+  TWO_PLUS_YEARS
+  WHEN_RIGHT_PERSON_FOUND
+}
+
+enum IntroductionStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+enum RelationshipStageType {
+  DISCOVERY
+  INTRODUCED
+  FRIENDSHIP
+  DISCERNMENT
+  COURTSHIP
+  FAMILY_MENTOR_INVOLVEMENT
+  MARRIAGE_PREPARATION
+  MARRIED
+  ENDED
+}
+
+enum MessageType {
+  TEXT
+  VOICE
+  SYSTEM
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  INITIATED
+  RINGING
+  ACCEPTED
+  DECLINED
+  MISSED
+  ENDED
+  FAILED
+}
+
+enum ReportReasonCategory {
+  HARASSMENT
+  INAPPROPRIATE_CONTENT
+  SEXUAL_SOLICITATION
+  SCAM_OR_FINANCIAL
+  FAKE_PROFILE
+  UNDERAGE_CONCERN
+  SAFETY_CONCERN
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum ModerationCaseStatus {
+  OPEN
+  INVESTIGATING
+  ACTION_TAKEN
+  ESCALATED
+  CLOSED
+}
+
+enum ModerationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum ModeratorActionType {
+  WARNING_ISSUED
+  CONTENT_REMOVED
+  ACCOUNT_SUSPENDED
+  ACCOUNT_BANNED
+  ACCOUNT_REINSTATED
+  CASE_ESCALATED
+  CASE_CLOSED
+  NO_ACTION_TAKEN
+}
+
+enum NotificationType {
+  NEW_INTRODUCTION
+  INTRODUCTION_ACCEPTED
+  INTRODUCTION_DECLINED
+  NEW_MESSAGE
+  NEW_CALL
+  STAGE_CHANGE
+  MENTORSHIP_REQUEST
+  MODERATION_UPDATE
+  VERIFICATION_UPDATE
+  EVENT_REMINDER
+  DONATION_RECEIPT
+  SYSTEM_ANNOUNCEMENT
+}
+
+enum MentorshipRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  COMPLETED
+  WITHDRAWN
+}
+
+enum PostVisibility {
+  PUBLIC
+  MEMBERS_ONLY
+  MENTORS_ONLY
+}
+
+enum CampaignStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum DonationStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum DisbursementStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+}
+
+enum FamilyMentorInviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+}
+
+enum FamilyMentorAccessScope {
+  VIEW_STAGE_ONLY
+  VIEW_STAGE_AND_SUMMARY
+}
+
+// -----------------------------------------------------------------------------
+// 1-2. USERS  (auth identity itself is Supabase Auth's job, not ours)
+// -----------------------------------------------------------------------------
+// DECISION (see ARCHITECTURE.md "Supabase Auth integration"): this schema now
+// runs on Supabase. `User.id` is a 1:1 extension of Supabase's `auth.users.id`
+// (FK managed at the SQL level — Prisma's default `multiSchema` support for
+// modeling `auth.users` itself was not enabled to keep this schema focused on
+// tables we own). Credential storage, password hashing, OAuth identity
+// linking, and email/phone OTP verification are handled by Supabase Auth, not
+// modeled here — no more AuthIdentity/PhoneVerification/EmailVerification.
+// -----------------------------------------------------------------------------
+
+/// Core account record — a 1:1 extension of Supabase's auth.users row,
+/// auto-created by the `handle_new_auth_user` trigger on signup.
+model User {
+  id        String     @id // == auth.users.id, no @default here — see note above
+  role      Role       @default(MEMBER)
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  deletedAt DateTime? // soft delete; PII scrubbing handled by app-layer job, not schema
+
+  memberProfile         MemberProfile?
+  identityVerification  IdentityVerification?
+  ageVerification       AgeVerification?
+  faithProfile          FaithProfile?
+  locationProfile       LocationProfile?
+  education             Education?
+  occupation            Occupation?
+  businessInfo          BusinessInfo?
+  memberInterests       MemberInterest[]
+  marriageIntention     MarriageIntention?
+  partnerPreference     PartnerPreference?
+
+  introductionsSent     IntroductionRequest[] @relation("IntroductionRequester")
+  introductionsReceived IntroductionRequest[] @relation("IntroductionRecipient")
+  connectionsAsA        Connection[]           @relation("ConnectionUserA")
+  connectionsAsB        Connection[]           @relation("ConnectionUserB")
+  stageChangesInitiated RelationshipStage[]    @relation("StageInitiatedBy")
+
+  messagesSent    Message[]
+  calls           Call[]                @relation("CallInitiator")
+
+  reportsFiled       Report[]        @relation("ReportsFiled")
+  reportsAgainstUser Report[]        @relation("ReportsAgainstUser")
+  blocksInitiated    Block[]         @relation("BlocksInitiated")
+  blocksReceived     Block[]         @relation("BlocksReceived")
+  moderationCasesAssigned ModerationCase[] @relation("ModerationAssignee")
+  moderatorActions   ModeratorAction[]
+  auditLogEntries    AuditLog[]
+
+  notifications Notification[]
+
+  mentorProfile      Mentor?
+  mentorshipRequestsAsMentee MentorshipRequest[] @relation("MentorshipMentee")
+
+  communityPosts CommunityPost[]
+  comments       Comment[]
+  eventsHosted   Event[]              @relation("EventHost")
+  eventRSVPs     EventAttendee[]
+  jobsPosted     Job[]
+  businessProfile BusinessProfile?
+  campaignsOrganized FundraisingCampaign[] @relation("CampaignOrganizer")
+  donationsMade      Donation[]
+  disbursementsApproved FundDisbursement[] @relation("DisbursementApprover")
+
+  familyMentorInvitationsSent FamilyMentorInvitation[] @relation("InvitationSender")
+
+  @@map("users")
+}
+
+
+// -----------------------------------------------------------------------------
+// 3-4. MEMBER PROFILE / GENDER
+// -----------------------------------------------------------------------------
+
+/// The "public-ish" profile — visible to other members within the app's
+/// discovery/introduction flows. Never contains email or phone.
+model MemberProfile {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName  String
+  gender       Gender
+  dateOfBirth  DateTime @db.Date
+  bio          String?
+  photoKeys    String[] // object storage keys, never raw URLs with signed secrets
+  headlinePhotoKey String?
+  isDiscoverable Boolean @default(false) // false until verification gates below are satisfied
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([gender])
+  @@index([isDiscoverable])
+  @@map("member_profiles")
+}
+
+// -----------------------------------------------------------------------------
+// 5. DATE OF BIRTH / AGE VERIFICATION
+// -----------------------------------------------------------------------------
+
+/// Records the *event* of age verification (age itself lives on MemberProfile
+/// as dateOfBirth). Kept separate so we have an auditable trail distinct from
+/// the mutable profile row.
+model AgeVerification {
+  id           String             @id @default(uuid())
+  userId       String             @unique
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status       VerificationStatus @default(UNVERIFIED)
+  method       IdentityVerificationMethod?
+  minimumAgeAtVerification Int    @default(18)
+  verifiedAt   DateTime?
+  rejectedReason String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@map("age_verifications")
+}
+
+// -----------------------------------------------------------------------------
+// 6-7. PHONE / EMAIL VERIFICATION
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 8. IDENTITY VERIFICATION STATUS
+// -----------------------------------------------------------------------------
+
+model IdentityVerification {
+  id             String                      @id @default(uuid())
+  userId         String                      @unique
+  user           User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status         VerificationStatus          @default(UNVERIFIED)
+  method         IdentityVerificationMethod?
+  documentStorageKey String? // object storage key to encrypted ID scan; never public
+  providerReference  String? // reference id at third-party KYC vendor, if used
+  reviewedByUserId   String? // admin/moderator who reviewed (nullable = automated)
+  reviewedAt         DateTime?
+  rejectedReason      String?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  @@index([status])
+  @@map("identity_verifications")
+}
+
+// -----------------------------------------------------------------------------
+// 9. FAITH INFORMATION
+// -----------------------------------------------------------------------------
+
+model FaithProfile {
+  id              String          @id @default(uuid())
+  userId          String          @unique
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  denomination    String?
+  faithCommunity  String? // e.g. specific church/community name
+  faithImportance FaithImportance
+  testimony       String? // free-text, optional, member-authored
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@map("faith_profiles")
+}
+
+// -----------------------------------------------------------------------------
+// 10. LOCATION
+// -----------------------------------------------------------------------------
+
+model LocationProfile {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  country          String
+  region           String? // state/province
+  city             String?
+  latitude         Float?
+  longitude        Float?
+  willingToRelocate Boolean @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([country, region])
+  @@map("location_profiles")
+}
+
+// -----------------------------------------------------------------------------
+// 11. EDUCATION
+// -----------------------------------------------------------------------------
+
+model Education {
+  id          String         @id @default(uuid())
+  userId      String         @unique
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  level       EducationLevel
+  fieldOfStudy String?
+  institution String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@map("education_records")
+}
+
+// -----------------------------------------------------------------------------
+// 12. OCCUPATION
+// -----------------------------------------------------------------------------
+
+model Occupation {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobTitle   String?
+  employer   String?
+  industry   String?
+  isSelfEmployed Boolean @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("occupations")
+}
+
+// -----------------------------------------------------------------------------
+// 13. BUSINESS INFORMATION (profile attribute — distinct from BusinessProfile
+// in the community-networking directory, #37, though a member typically has both)
+// -----------------------------------------------------------------------------
+
+model BusinessInfo {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ownsBusiness Boolean @default(false)
+  businessName String?
+  businessRole String?
+  yearsOperating Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("business_info")
+}
+
+// -----------------------------------------------------------------------------
+// 14. INTERESTS
+// -----------------------------------------------------------------------------
+
+model Interest {
+  id      String           @id @default(uuid())
+  name    String           @unique
+  category String?
+  members MemberInterest[]
+
+  @@map("interests")
+}
+
+model MemberInterest {
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  interestId String
+  interest   Interest @relation(fields: [interestId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([userId, interestId])
+  @@map("member_interests")
+}
+
+// -----------------------------------------------------------------------------
+// 15. MARRIAGE INTENTIONS
+// -----------------------------------------------------------------------------
+
+model MarriageIntention {
+  id                String            @id @default(uuid())
+  userId            String            @unique
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seriouslySeekingMarriage Boolean    @default(true)
+  timeframe         MarriageTimeframe
+  wantsChildren     Boolean?
+  numberOfChildrenDesired Int?
+  hasChildrenAlready Boolean          @default(false)
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@map("marriage_intentions")
+}
+
+// -----------------------------------------------------------------------------
+// 16. PARTNER PREFERENCES
+// -----------------------------------------------------------------------------
+
+model PartnerPreference {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  preferredGender       Gender
+  minAge                Int
+  maxAge                Int
+  maxDistanceKm         Int?
+  requireSameFaith      Boolean  @default(false)
+  minFaithImportance    FaithImportance?
+  minEducationLevel     EducationLevel?
+  openToChildrenAlready Boolean  @default(true)
+  openToRelocation      Boolean  @default(false)
+  notes                 String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("partner_preferences")
+}
+
+// -----------------------------------------------------------------------------
+// 17. COMPATIBILITY INFORMATION
+// -----------------------------------------------------------------------------
+
+/// Cached/computed compatibility between an ordered pair of users. Recomputed
+/// by a background job, never treated as a guarantee (see product principle #15).
+model CompatibilityScore {
+  id          String   @id @default(uuid())
+  userAId     String
+  userBId     String
+  score       Float // 0.0 - 1.0
+  factorBreakdown Json // e.g. {"faith":0.9,"location":0.6,"values":0.8}
+  computedAt  DateTime @default(now())
+
+  @@unique([userAId, userBId])
+  @@index([userBId])
+  @@map("compatibility_scores")
+}
+
+// -----------------------------------------------------------------------------
+// 18. INTRODUCTION REQUESTS
+// -----------------------------------------------------------------------------
+
+model IntroductionRequest {
+  id            String             @id @default(uuid())
+  requesterId   String
+  requester     User               @relation("IntroductionRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  recipientId   String
+  recipient     User               @relation("IntroductionRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  status        IntroductionStatus @default(PENDING)
+  introMessage  String?
+  respondedAt   DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  connection    Connection?
+
+  @@unique([requesterId, recipientId, createdAt])
+  @@index([recipientId, status])
+  @@map("introduction_requests")
+}
+
+// -----------------------------------------------------------------------------
+// 19. CONNECTIONS  /  20. RELATIONSHIP STAGES
+// -----------------------------------------------------------------------------
+
+/// The durable container for an ongoing relationship between two members,
+/// created when an IntroductionRequest is accepted. userAId < userBId is
+/// enforced at the application layer to make the unique pair constraint work
+/// regardless of who introduced whom.
+model Connection {
+  id                     String              @id @default(uuid())
+  userAId                String
+  userA                  User                @relation("ConnectionUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userBId                String
+  userB                  User                @relation("ConnectionUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  originIntroductionId   String?             @unique
+  originIntroduction     IntroductionRequest? @relation(fields: [originIntroductionId], references: [id])
+  status                 ConnectionStatus    @default(ACTIVE)
+  currentStage           RelationshipStageType @default(INTRODUCED)
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  stages          RelationshipStage[]
+  conversation    Conversation?
+  familyMentorInvitations FamilyMentorInvitation[]
+  marriageJourney MarriageJourney?
+
+  @@unique([userAId, userBId])
+  @@index([userBId])
+  @@map("connections")
+}
+
+/// Append-only history of stage transitions for a Connection. currentStage on
+/// Connection is a denormalized "latest" pointer for fast reads.
+model RelationshipStage {
+  id             String                @id @default(uuid())
+  connectionId   String
+  connection     Connection            @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  stage          RelationshipStageType
+  initiatedByUserId String?
+  initiatedBy    User?                 @relation("StageInitiatedBy", fields: [initiatedByUserId], references: [id])
+  notes          String?
+  enteredAt      DateTime              @default(now())
+  endedAt        DateTime?
+
+  @@index([connectionId])
+  @@map("relationship_stages")
+}
+
+// -----------------------------------------------------------------------------
+// 21-22. CONVERSATIONS / MESSAGES
+// -----------------------------------------------------------------------------
+
+/// One conversation per Connection. Kept as its own table (rather than folded
+/// into Connection) so message-authorization checks can be scoped narrowly.
+model Conversation {
+  id           String    @id @default(uuid())
+  connectionId String    @unique
+  connection   Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  isArchived   Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  messages Message[]
+  calls    Call[]
+
+  @@map("conversations")
+}
+
+/// Message content is stored as ciphertext. The app layer encrypts with a
+/// per-conversation data key (itself wrapped by a KMS master key) before
+/// insert, and decrypts only for the two authorized participants. See
+/// SECURITY.md — moderators do NOT get a standing decryption key; access to
+/// a reported conversation's plaintext requires the reported-content escrow
+/// flow described there, which is logged to AuditLog.
+model Message {
+  id               String      @id @default(uuid())
+  conversationId   String
+  conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId         String
+  sender           User        @relation(fields: [senderId], references: [id])
+  type             MessageType @default(TEXT)
+  ciphertext       Bytes
+  nonce            Bytes
+  readAt           DateTime?
+  deletedAt        DateTime? // soft delete (sender-initiated "unsend")
+  createdAt        DateTime    @default(now())
+
+  voiceMessage VoiceMessage?
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+// -----------------------------------------------------------------------------
+// 23. VOICE MESSAGES
+// -----------------------------------------------------------------------------
+
+model VoiceMessage {
+  id             String  @id @default(uuid())
+  messageId      String  @unique
+  message        Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  audioStorageKey String // encrypted object storage key
+  durationSeconds Int
+  transcript     String? // optional, generated async, still access-controlled like the message
+
+  @@map("voice_messages")
+}
+
+// -----------------------------------------------------------------------------
+// 24. CALLS
+// -----------------------------------------------------------------------------
+
+model Call {
+  id             String     @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  initiatorId    String
+  initiator      User       @relation("CallInitiator", fields: [initiatorId], references: [id])
+  type           CallType
+  status         CallStatus @default(INITIATED)
+  providerSessionId String? // opaque id from the WebRTC/comms provider
+  startedAt      DateTime?
+  endedAt        DateTime?
+  durationSeconds Int?
+  createdAt      DateTime   @default(now())
+
+  @@index([conversationId])
+  @@map("calls")
+}
+
+// -----------------------------------------------------------------------------
+// 25. REPORTS  /  26. BLOCKS
+// -----------------------------------------------------------------------------
+
+model Report {
+  id                String               @id @default(uuid())
+  reporterId        String
+  reporter          User                 @relation("ReportsFiled", fields: [reporterId], references: [id])
+  reportedUserId    String
+  reportedUser      User                 @relation("ReportsAgainstUser", fields: [reportedUserId], references: [id])
+  category          ReportReasonCategory
+  description       String
+  relatedContentType String? // e.g. "Message", "CommunityPost"
+  relatedContentId   String?
+  status            ReportStatus         @default(OPEN)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  moderationCase ModerationCase?
+
+  @@index([reportedUserId, status])
+  @@index([reporterId])
+  @@map("reports")
+}
+
+model Block {
+  id         String   @id @default(uuid())
+  blockerId  String
+  blocker    User     @relation("BlocksInitiated", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedId  String
+  blocked    User     @relation("BlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("blocks")
+}
+
+// -----------------------------------------------------------------------------
+// 27-28. MODERATION CASES / MODERATOR ACTIONS
+// -----------------------------------------------------------------------------
+
+model ModerationCase {
+  id                 String                @id @default(uuid())
+  reportId           String                @unique
+  report             Report                @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  assignedModeratorId String?
+  assignedModerator  User?                 @relation("ModerationAssignee", fields: [assignedModeratorId], references: [id])
+  status             ModerationCaseStatus  @default(OPEN)
+  priority           ModerationPriority    @default(NORMAL)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  closedAt           DateTime?
+
+  actions ModeratorAction[]
+
+  @@index([status, priority])
+  @@index([assignedModeratorId])
+  @@map("moderation_cases")
+}
+
+model ModeratorAction {
+  id               String              @id @default(uuid())
+  caseId           String
+  case             ModerationCase      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  moderatorId      String
+  moderator        User                @relation(fields: [moderatorId], references: [id])
+  actionType       ModeratorActionType
+  notes            String?
+  createdAt        DateTime            @default(now())
+
+  @@index([caseId])
+  @@map("moderator_actions")
+}
+
+// -----------------------------------------------------------------------------
+// 29. AUDIT LOGS
+// -----------------------------------------------------------------------------
+
+/// Append-only. Application code must never UPDATE or DELETE rows here.
+/// Every privileged action (role change, ban, disbursement approval, conversation
+/// escrow access, etc.) writes one row.
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  actor        User?    @relation(fields: [actorUserId], references: [id])
+  action       String // e.g. "USER_BANNED", "CONVERSATION_ESCROW_ACCESSED"
+  targetType   String? // e.g. "User", "Conversation", "FundDisbursement"
+  targetId     String?
+  metadata     Json?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([targetType, targetId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+// -----------------------------------------------------------------------------
+// 30. NOTIFICATIONS
+// -----------------------------------------------------------------------------
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  payload   Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// -----------------------------------------------------------------------------
+// 31-32. MENTORS / MENTORSHIP REQUESTS
+// -----------------------------------------------------------------------------
+
+model Mentor {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio         String?
+  specialties String[]
+  capacity    Int      @default(5)
+  isActive    Boolean  @default(true)
+  approvedByUserId String? // admin who approved mentor status
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  mentorshipRequests MentorshipRequest[]
+
+  @@map("mentors")
+}
+
+model MentorshipRequest {
+  id         String                   @id @default(uuid())
+  menteeId   String
+  mentee     User                     @relation("MentorshipMentee", fields: [menteeId], references: [id], onDelete: Cascade)
+  mentorId   String
+  mentor     Mentor                   @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  status     MentorshipRequestStatus  @default(PENDING)
+  message    String?
+  createdAt  DateTime                 @default(now())
+  updatedAt  DateTime                 @updatedAt
+
+  @@index([mentorId, status])
+  @@index([menteeId])
+  @@map("mentorship_requests")
+}
+
+// -----------------------------------------------------------------------------
+// 33-34. COMMUNITY POSTS / COMMENTS
+// -----------------------------------------------------------------------------
+
+model CommunityPost {
+  id         String         @id @default(uuid())
+  authorId   String
+  author     User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  title      String
+  body       String
+  category   String?
+  visibility PostVisibility @default(MEMBERS_ONLY)
+  isRemoved  Boolean        @default(false) // moderation soft-delete
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  comments Comment[]
+
+  @@index([authorId])
+  @@index([visibility, createdAt])
+  @@map("community_posts")
+}
+
+model Comment {
+  id              String    @id @default(uuid())
+  postId          String
+  post            CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId        String
+  author          User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parentCommentId String?
+  parentComment   Comment?  @relation("CommentReplies", fields: [parentCommentId], references: [id])
+  replies         Comment[] @relation("CommentReplies")
+  body            String
+  isRemoved       Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([postId])
+  @@map("comments")
+}
+
+// -----------------------------------------------------------------------------
+// 35. EVENTS  (+ EventAttendee join table — needed for referential integrity;
+// see report at end of phase for why this was added)
+// -----------------------------------------------------------------------------
+
+model Event {
+  id          String   @id @default(uuid())
+  hostId      String
+  host        User     @relation("EventHost", fields: [hostId], references: [id])
+  title       String
+  description String?
+  location    String?
+  isVirtual   Boolean  @default(false)
+  startAt     DateTime
+  endAt       DateTime
+  capacity    Int?
+  isCancelled Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  attendees EventAttendee[]
+
+  @@index([startAt])
+  @@map("events")
+}
+
+model EventAttendee {
+  eventId  String
+  event    Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rsvpAt   DateTime @default(now())
+  attended Boolean?
+
+  @@id([eventId, userId])
+  @@map("event_attendees")
+}
+
+// -----------------------------------------------------------------------------
+// 36. JOBS
+// -----------------------------------------------------------------------------
+
+model Job {
+  id          String   @id @default(uuid())
+  posterId    String
+  poster      User     @relation(fields: [posterId], references: [id])
+  title       String
+  company     String?
+  description String
+  location    String?
+  isRemote    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, createdAt])
+  @@map("jobs")
+}
+
+// -----------------------------------------------------------------------------
+// 37. BUSINESS PROFILES (community networking directory listing)
+// -----------------------------------------------------------------------------
+
+model BusinessProfile {
+  id          String   @id @default(uuid())
+  ownerId     String   @unique
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  businessName String
+  category    String?
+  description String?
+  website     String?
+  isPublic    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("business_profiles")
+}
+
+// -----------------------------------------------------------------------------
+// 38-40. FUNDRAISING CAMPAIGNS / DONATIONS / FUND DISBURSEMENTS
+// -----------------------------------------------------------------------------
+
+model FundraisingCampaign {
+  id             String         @id @default(uuid())
+  organizerId    String
+  organizer      User           @relation("CampaignOrganizer", fields: [organizerId], references: [id])
+  title          String
+  description    String
+  goalAmountCents Int
+  raisedAmountCents Int         @default(0) // cache, reconciled against Donation sum by a job
+  status         CampaignStatus @default(DRAFT)
+  approvedByUserId String? // admin approval required before ACTIVE
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  donations     Donation[]
+  disbursements FundDisbursement[]
+
+  @@index([status])
+  @@map("fundraising_campaigns")
+}
+
+model Donation {
+  id            String         @id @default(uuid())
+  campaignId    String
+  campaign      FundraisingCampaign @relation(fields: [campaignId], references: [id])
+  donorId       String? // nullable = anonymous donation
+  donor         User?          @relation(fields: [donorId], references: [id])
+  amountCents   Int
+  status        DonationStatus @default(PENDING)
+  paymentProviderRef String? // opaque reference at payment processor; no card data stored here
+  createdAt     DateTime       @default(now())
+
+  @@index([campaignId, status])
+  @@index([donorId])
+  @@map("donations")
+}
+
+model FundDisbursement {
+  id             String              @id @default(uuid())
+  campaignId     String
+  campaign       FundraisingCampaign @relation(fields: [campaignId], references: [id])
+  amountCents    Int
+  recipientDescription String
+  status         DisbursementStatus  @default(PENDING)
+  approvedByUserId String?
+  approvedBy     User?               @relation("DisbursementApprover", fields: [approvedByUserId], references: [id])
+  disbursedAt    DateTime?
+  createdAt      DateTime            @default(now())
+
+  @@index([campaignId, status])
+  @@map("fund_disbursements")
+}
+
+// -----------------------------------------------------------------------------
+// 41. FAMILY / MENTOR INVITATIONS
+// -----------------------------------------------------------------------------
+
+/// A member in a Connection can invite a trusted family member or mentor to
+/// have limited visibility into the relationship's stage as it becomes
+/// serious (product principle #10). Scope is deliberately restrictive —
+/// see FamilyMentorAccessScope; invitees never get message content access.
+model FamilyMentorInvitation {
+  id              String                    @id @default(uuid())
+  connectionId    String
+  connection      Connection                @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  invitedByUserId String
+  invitedBy       User                      @relation("InvitationSender", fields: [invitedByUserId], references: [id])
+  inviteeName     String
+  inviteeEmail    String?
+  inviteeRelationship String // e.g. "Father", "Pastor", "Mentor"
+  accessScope     FamilyMentorAccessScope   @default(VIEW_STAGE_ONLY)
+  status          FamilyMentorInviteStatus  @default(PENDING)
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  @@index([connectionId])
+  @@map("family_mentor_invitations")
+}
+
+// -----------------------------------------------------------------------------
+// 42. MARRIAGE JOURNEYS
+// -----------------------------------------------------------------------------
+
+/// One per Connection that reaches MARRIAGE_PREPARATION or beyond. Tracks the
+/// structured checklist/milestones distinct from the free-flowing stage log.
+model MarriageJourney {
+  id             String    @id @default(uuid())
+  connectionId   String    @unique
+  connection     Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  preparationStartedAt DateTime?
+  milestones     Json? // e.g. [{"name":"Premarital counseling session 1","completedAt":...}]
+  marriedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("marriage_journeys")
+}

@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Env files — NEVER commit real secrets. .env.example is the only env file
+# that belongs in git.
+.env
+.env.local
+.env.*.local
+
+# Next.js (once Phase 2 scaffolds it)
+.next/
+out/
+build/
+dist/
+
+# Prisma
+prisma/*.db
+prisma/migrations/dev/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor/OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# TypeScript
+*.tsbuildinfo
+
+# Vercel (once deployed)
+.vercel
