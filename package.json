@@ -2,8 +2,11 @@
   "name": "platform",
   "version": "0.1.0",
   "private": true,
-  "description": "Phase 1: architecture, database, and security foundation. No application UI yet.",
+  "description": "Phase 1: architecture, database, and security foundation, plus a minimal Next.js deploy used only to verify Vercel env vars and Supabase connectivity. Not the product UI yet.",
   "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "test:auth": "tsx tests/permissions.test.ts && tsx tests/authorization.test.ts",
     "validate:schema": "python3 scripts/validate_schema_consistency.py",
     "prisma:generate": "prisma generate",
@@ -13,13 +16,19 @@
     "prisma:studio": "prisma studio"
   },
   "dependencies": {
-    "@prisma/client": "^5.20.0"
+    "@prisma/client": "^5.20.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "next": "^14.2.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
   },
   "devDependencies": {
     "prisma": "^5.20.0",
     "typescript": "^5.6.0",
     "tsx": "^4.19.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0"
   },
   "engines": {
     "node": ">=20"
