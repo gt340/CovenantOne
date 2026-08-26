@@ -40,10 +40,19 @@ enum Role {
 
 enum UserStatus {
   ACTIVE
+  PENDING_VERIFICATION
   SUSPENDED
   BANNED
   DEACTIVATED_BY_USER
   PENDING_DELETION
+  DELETED
+}
+
+enum MaritalStatus {
+  SINGLE
+  DIVORCED
+  WIDOWED
+  SEPARATED
 }
 
 
@@ -261,12 +270,13 @@ enum FamilyMentorAccessScope {
 model User {
   id        String     @id // == auth.users.id, no @default here — see note above
   role      Role       @default(MEMBER)
-  status    UserStatus @default(ACTIVE)
+  status    UserStatus @default(PENDING_VERIFICATION)
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
   deletedAt DateTime? // soft delete; PII scrubbing handled by app-layer job, not schema
 
   memberProfile         MemberProfile?
+  phoneVerification     PhoneVerification?
   identityVerification  IdentityVerification?
   ageVerification       AgeVerification?
   faithProfile          FaithProfile?
@@ -328,7 +338,8 @@ model MemberProfile {
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   displayName  String
   gender       Gender
-  dateOfBirth  DateTime @db.Date
+  dateOfBirth  DateTime @db.Date // DB also enforces 18+ via chk_member_profiles_min_age — see migration 0005
+  maritalStatus MaritalStatus
   bio          String?
   photoKeys    String[] // object storage keys, never raw URLs with signed secrets
   headlinePhotoKey String?
@@ -366,8 +377,30 @@ model AgeVerification {
 // -----------------------------------------------------------------------------
 // 6-7. PHONE / EMAIL VERIFICATION
 // -----------------------------------------------------------------------------
+// Email verification: no table — auth.users.email_confirmed_at (Supabase
+// Auth) is the source of truth; the `on_auth_user_email_confirmed` trigger
+// (migration 0005) promotes the account from PENDING_VERIFICATION to ACTIVE
+// when it's set.
+//
+// Phone verification: DOES have a table, reintroduced in Phase 2. This is a
+// trust/safety signal on the profile, not a Supabase Auth login method —
+// login stays email+password only. Kept separate from auth.users on purpose.
 
+model PhoneVerification {
+  id            String             @id @default(uuid())
+  userId        String             @unique
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneE164     String             @unique
+  status        VerificationStatus @default(UNVERIFIED)
+  otpCodeHash   String?
+  otpExpiresAt  DateTime?
+  otpAttempts   Int                @default(0)
+  verifiedAt    DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
 
+  @@map("phone_verifications")
+}
 
 // -----------------------------------------------------------------------------
 // 8. IDENTITY VERIFICATION STATUS

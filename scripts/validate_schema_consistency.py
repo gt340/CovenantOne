@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Validates that prisma/schema.prisma and prisma/migrations/0001_init_core_schema/migration.sql
-describe the same set of tables and the same field/column names per table.
+Validates that prisma/schema.prisma matches the CUMULATIVE effect of every
+migration under prisma/migrations/, applied in order (0001, 0002, ...) --
+not just the initial migration. Each migration folder's migration.sql is
+scanned for CREATE TABLE and ALTER TABLE ... ADD COLUMN statements, building
+up a picture of final table/column state exactly as a real `prisma migrate
+deploy` run would leave the database.
 
-This is NOT a substitute for actually running the migration against Postgres
-(see PHASE1_REPORT.md for why that wasn't possible in this sandbox). It is a
-structural cross-check: every model in the Prisma schema must have a matching
-CREATE TABLE in the SQL, and the scalar field names on each must line up
-1:1 (relation-only fields on the Prisma side, which don't produce a column,
-are excluded by design -- see RELATION_ONLY_FIELDS logic below).
+This is NOT a substitute for actually running the migrations against
+Postgres. It is a structural cross-check: every model in the Prisma schema
+must have a matching table (created by some migration), and the scalar field
+names on each must line up 1:1 with the columns that migration history
+produces (relation-only fields on the Prisma side, which don't produce a
+column, are excluded by design -- see bare_type logic below).
 """
 import re
 import sys
@@ -16,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PRISMA_PATH = ROOT / "prisma" / "schema.prisma"
-SQL_PATH = ROOT / "prisma" / "migrations" / "0001_init_core_schema" / "migration.sql"
+MIGRATIONS_DIR = ROOT / "prisma" / "migrations"
 
 
 def parse_prisma_model_names(text: str):
@@ -62,29 +66,54 @@ def parse_prisma_models(text: str):
     return models
 
 
-def parse_sql_tables(text: str):
-    """Return {table_name: set(column_name)}"""
+def ordered_migration_files():
+    """Migration folders sorted by their numeric prefix (0001, 0002, ...)."""
+    folders = [p for p in MIGRATIONS_DIR.iterdir() if p.is_dir()]
+    folders.sort(key=lambda p: p.name)
+    return [p / "migration.sql" for p in folders if (p / "migration.sql").exists()]
+
+
+def parse_sql_tables_cumulative(migration_paths):
+    """Return {table_name: set(column_name)} after applying every migration
+    in order: CREATE TABLE establishes a table, ALTER TABLE ... ADD COLUMN
+    adds to it. Tables/columns are never removed by any migration so far."""
     tables = {}
-    for m in re.finditer(r'CREATE TABLE "(\w+)"\s*\((.*?)\n\);', text, re.DOTALL):
-        table_name, body = m.group(1), m.group(2)
-        columns = set()
-        for line in body.splitlines():
-            line = line.strip().rstrip(",")
-            if not line:
-                continue
-            cm = re.match(r'^"(\w+)"\s+', line)
-            if cm:
-                columns.add(cm.group(1))
-        tables[table_name] = columns
+    for path in migration_paths:
+        text = path.read_text()
+
+        for m in re.finditer(r'CREATE TABLE "(\w+)"\s*\((.*?)\n\);', text, re.DOTALL):
+            table_name, body = m.group(1), m.group(2)
+            columns = set()
+            for line in body.splitlines():
+                line = line.strip().rstrip(",")
+                if not line:
+                    continue
+                cm = re.match(r'^"(\w+)"\s+', line)
+                if cm:
+                    columns.add(cm.group(1))
+            tables[table_name] = columns
+
+        for m in re.finditer(
+            r'ALTER TABLE\s+"(\w+)"\s+ADD COLUMN\s+"(\w+)"', text
+        ):
+            table_name, column_name = m.group(1), m.group(2)
+            if table_name in tables:
+                tables[table_name].add(column_name)
+            # If the table doesn't exist yet in our tracking, the ALTER
+            # would fail for real too -- surface it rather than silently
+            # dropping the column, so the inconsistency is visible.
+            else:
+                tables[table_name] = {column_name}
+
     return tables
 
 
 def main():
     prisma_text = PRISMA_PATH.read_text()
-    sql_text = SQL_PATH.read_text()
+    migration_paths = ordered_migration_files()
 
     models = parse_prisma_models(prisma_text)
-    tables = parse_sql_tables(sql_text)
+    tables = parse_sql_tables_cumulative(migration_paths)
 
     errors = []
 
@@ -92,9 +121,9 @@ def main():
     missing_in_sql = expected_tables - set(tables.keys())
     extra_in_sql = set(tables.keys()) - expected_tables
     if missing_in_sql:
-        errors.append(f"Tables in schema.prisma but missing from migration.sql: {sorted(missing_in_sql)}")
+        errors.append(f"Tables in schema.prisma but missing from migrations: {sorted(missing_in_sql)}")
     if extra_in_sql:
-        errors.append(f"Tables in migration.sql but not declared in schema.prisma: {sorted(extra_in_sql)}")
+        errors.append(f"Tables in migrations but not declared in schema.prisma: {sorted(extra_in_sql)}")
 
     for model_name, info in models.items():
         table = info["table"]
@@ -109,7 +138,7 @@ def main():
         if extra_cols:
             errors.append(f"[{model_name} / {table}] SQL columns with no matching Prisma field: {sorted(extra_cols)}")
 
-    print(f"Parsed {len(models)} Prisma models and {len(tables)} SQL tables.\n")
+    print(f"Parsed {len(models)} Prisma models and {len(tables)} SQL tables across {len(migration_paths)} migration file(s).\n")
 
     if errors:
         print(f"FAILED — {len(errors)} inconsistency(ies) found:\n")
@@ -117,9 +146,10 @@ def main():
             print(f"  - {e}")
         sys.exit(1)
     else:
-        print("PASSED — every Prisma model has a matching SQL table, and all scalar fields line up with columns.")
+        print("PASSED — every Prisma model has a matching SQL table, and all scalar fields line up with columns across the full migration history.")
         sys.exit(0)
 
 
 if __name__ == "__main__":
     main()
+
