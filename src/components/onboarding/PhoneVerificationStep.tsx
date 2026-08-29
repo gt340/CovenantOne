@@ -10,6 +10,7 @@ export function PhoneVerificationStep({ onComplete }: { onComplete: () => void }
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [devModeCode, setDevModeCode] = useState<string | null>(null);
+  const [testingBypass, setTestingBypass] = useState(false);
 
   async function handleRequestCode(e: React.FormEvent) {
     e.preventDefault();
@@ -36,8 +37,9 @@ export function PhoneVerificationStep({ onComplete }: { onComplete: () => void }
     }
 
     if (body.devModeCode) {
-      // Only ever present outside production (see src/lib/domain/sms-provider.ts)
+      // Present outside a real SMS send — see src/lib/domain/sms-provider.ts
       setDevModeCode(body.devModeCode);
+      setTestingBypass(Boolean(body.testingBypass));
     }
     setStage("enter_code");
   }
@@ -93,7 +95,15 @@ export function PhoneVerificationStep({ onComplete }: { onComplete: () => void }
       {stage === "enter_code" && (
         <form onSubmit={handleVerifyCode}>
           <p>Enter the 6-digit code sent to {phone}.</p>
-          {devModeCode && (
+          {devModeCode && testingBypass && (
+            <p style={{ background: "#f8d7da", color: "#58151c", padding: "0.75rem", border: "2px solid #dc3545" }}>
+              ⚠️ TESTING BYPASS ACTIVE — no real SMS was sent, and this does
+              NOT prove you control this phone number. This must be disabled
+              (remove ALLOW_INSECURE_OTP_TESTING_BYPASS) before real members
+              use this platform. Your code is: <strong>{devModeCode}</strong>
+            </p>
+          )}
+          {devModeCode && !testingBypass && (
             <p style={{ background: "#fff3cd", padding: "0.5rem" }}>
               Development mode — no real SMS was sent. Your code is:{" "}
               <strong>{devModeCode}</strong>

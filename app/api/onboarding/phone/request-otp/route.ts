@@ -43,8 +43,6 @@ export async function POST(request: Request) {
   );
 
   if (error) {
-    // Postgres unique_violation on phoneE164 — this number is already
-    // verified/pending on a different account.
     if (error.code === "23505") {
       return NextResponse.json(
         { ok: false, error: "This phone number is already associated with another account." },
@@ -58,8 +56,8 @@ export async function POST(request: Request) {
     const smsResult = await sendOtpSms(phoneE164, code);
     return NextResponse.json({
       ok: true,
-      // Only ever present outside production — see sendOtpSms for the gate.
       devModeCode: smsResult.devModeCode,
+      testingBypass: smsResult.testingBypass ?? false,
     });
   } catch (smsError) {
     return NextResponse.json(
