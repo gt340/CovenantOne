@@ -96,3 +96,72 @@ the visual app itself is still on hold)
    makes that safe) plus `SUPABASE_SERVICE_ROLE_KEY` (server-only, bypasses
    RLS — never ship this to the client) will need to go into Vercel's env
    config once the app exists.
+
+## Additional sign-in methods (Google OAuth, passkeys, magic link)
+
+Added on top of the original email+password flow. Two of these need a
+one-time setup step in the Supabase dashboard before they'll actually work —
+the code alone isn't enough, by design (these are real external integrations,
+not something that can be faked from application code).
+
+### Google sign-in — requires dashboard setup
+
+The app calls `supabase.auth.signInWithOAuth({ provider: "google" })`, but
+Supabase needs real Google OAuth credentials configured before that does
+anything:
+
+1. **Google Cloud Console** → create (or reuse) a project → **APIs & Services
+   → Credentials → Create Credentials → OAuth client ID** → Application type:
+   **Web application**.
+2. Add this **Authorized redirect URI** (get the exact value from Supabase
+   dashboard → Authentication → Providers → Google, it's pre-filled there):
+   ```
+   https://<your-project-ref>.supabase.co/auth/v1/callback
+   ```
+3. Copy the generated **Client ID** and **Client Secret**.
+4. **Supabase dashboard** → **Authentication → Providers → Google** → paste
+   both in, toggle it **Enabled**, save.
+
+Until this is done, the "Continue with Google" button will show an error
+message rather than silently failing — that's intentional (see the comment
+in `app/login/page.tsx`).
+
+### Passkeys — beta, requires dashboard setup
+
+Uses Supabase Auth's native passkey/WebAuthn API (beta as of the Supabase
+changelog dated 2026-05-28). Requires `@supabase/supabase-js` v2.105.0+
+(bumped in `package.json`) and the client-side opt-in flag already set in
+`src/lib/supabase/client.ts` (`auth.experimental.passkey: true`).
+
+Dashboard setup, one time:
+
+1. **Supabase dashboard** → **Authentication → Passkeys** → toggle **Enable
+   Passkey authentication**.
+2. Fill in:
+   - **Relying Party Display Name**: whatever you want shown in the OS
+     passkey prompt, e.g. "CovenantOne"
+   - **Relying Party ID**: your bare domain, no scheme/port/path — e.g.
+     `covenant-one-gamma.vercel.app`
+   - **Relying Party Origins**: the full origin(s) users will actually sign
+     in from, e.g. `https://covenant-one-gamma.vercel.app`
+3. Save.
+
+**Important caveat to know about:** passkeys are cryptographically bound to
+the Relying Party ID (the domain) they were registered under. If this
+project later moves to a custom domain, passkeys registered under the
+`vercel.app` domain will stop working and everyone who registered one will
+need to re-register under the new domain. Worth deciding the real production
+domain before encouraging members to rely on passkeys heavily.
+
+Registration happens from the **Account** page (`/account`) — a user must
+already be signed in to add a passkey (this matches Supabase's own guidance:
+passkeys authenticate an *existing* account, so there's no passkey option on
+the sign-up page, only sign-in and account settings).
+
+### Magic link — works immediately, no setup needed
+
+Uses `supabase.auth.signInWithOtp({ email })`, which Supabase supports
+natively with no additional configuration — the existing email
+templates/SMTP setup (already working, since account confirmation emails
+work) cover this too.
+

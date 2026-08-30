@@ -11,6 +11,22 @@ export default function SignUpPage() {
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
 
+  async function handleGoogleSignUp() {
+    setError(null);
+    const supabase = createClient();
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback?next=/onboarding`,
+      },
+    });
+    if (oauthError) {
+      setError(
+        "Google sign-up isn't available right now. This usually means Google OAuth hasn't been configured in the Supabase dashboard yet."
+      );
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -61,6 +77,13 @@ export default function SignUpPage() {
   return (
     <main>
       <h1>Create your account</h1>
+
+      <button type="button" onClick={handleGoogleSignUp}>
+        Continue with Google
+      </button>
+
+      <hr />
+
       <form onSubmit={handleSubmit}>
         <label>
           Email
@@ -98,3 +121,4 @@ export default function SignUpPage() {
     </main>
   );
 }
+
