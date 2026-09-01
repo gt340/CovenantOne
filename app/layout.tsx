@@ -1,14 +1,14 @@
+import "./globals.css";
+
 export const metadata = {
-  title: "Platform — Phase 1 Infrastructure Check",
-  description: "Minimal deploy used to verify env vars and Supabase connectivity on Vercel.",
+  title: "CovenantOne",
+  description: "An intentional relationship platform for adults seriously considering marriage.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: "system-ui, sans-serif", margin: "3rem" }}>
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
