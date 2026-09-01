@@ -1,0 +1,403 @@
+/* =============================================================================
+   DESIGN SYSTEM — Phase 3
+   A deliberate visual identity for a covenant/marriage-track platform:
+   warmth and permanence without leaning on the generic "warm cream + serif +
+   terracotta" template look. Parchment-sage background (cool, quiet, chapel-
+   like) + antique brass accent (a ring/seal motif, used for verification
+   badges and the profile-completion indicator) + deep indigo ink for text.
+   ============================================================================= */
+
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+:root {
+  /* Color */
+  --color-bg: #f3f5f1;
+  --color-bg-elevated: #ffffff;
+  --color-ink: #232838;
+  --color-ink-muted: #5b6270;
+  --color-ink-faint: #8b909c;
+  --color-accent: #a98544; /* antique brass — the covenant/ring motif */
+  --color-accent-dark: #8b6b34;
+  --color-accent-tint: #f2e9d8;
+  --color-sage: #5b7355; /* growth */
+  --color-sage-tint: #e6ebe3;
+  --color-clay: #b97a6d; /* used sparingly — warmth accents only */
+  --color-border: #ddd8cc;
+  --color-error: #b3402a;
+  --color-error-tint: #f6e5e1;
+
+  /* Type */
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  /* Scale */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --shadow-card: 0 1px 3px rgba(35, 40, 56, 0.07), 0 10px 28px rgba(35, 40, 56, 0.06);
+  --space-1: 0.375rem;
+  --space-2: 0.625rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.25rem;
+  --space-6: 3.5rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--color-ink);
+  margin: 0 0 var(--space-2);
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  font-size: clamp(1.75rem, 1.4rem + 1.5vw, 2.5rem);
+  font-optical-sizing: auto;
+}
+
+h2 {
+  font-size: 1.375rem;
+  margin-top: var(--space-5);
+}
+
+h3 {
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+p {
+  margin: 0 0 var(--space-3);
+  color: var(--color-ink-muted);
+}
+
+a {
+  color: var(--color-accent-dark);
+}
+
+/* --- Layout ----------------------------------------------------------- */
+
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-4) var(--space-6);
+}
+
+.card {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+@media (min-width: 640px) {
+  .card {
+    padding: var(--space-5);
+  }
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+
+@media (min-width: 640px) {
+  .grid-2 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: var(--space-4) 0;
+}
+
+/* --- Header / identity block -------------------------------------------- */
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.profile-avatar {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: var(--color-accent-tint);
+  border: 2px solid var(--color-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  color: var(--color-accent-dark);
+  flex-shrink: 0;
+}
+
+/* --- Completion seal (signature element, replaces a generic progress bar) */
+
+.completion-seal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.completion-seal svg {
+  display: block;
+}
+
+.completion-seal-percent {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  fill: var(--color-accent-dark);
+}
+
+.completion-seal-label {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* --- Verification badges (stamped-seal style, not generic chips) -------- */
+
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  border: 1px solid var(--color-border);
+  color: var(--color-ink-faint);
+  background: transparent;
+}
+
+.badge.earned {
+  border-color: var(--color-accent);
+  color: var(--color-accent-dark);
+  background: var(--color-accent-tint);
+}
+
+.badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.disclaimer {
+  font-size: 0.82rem;
+  color: var(--color-ink-faint);
+  font-style: italic;
+  margin-top: 0;
+}
+
+/* --- Forms ---------------------------------------------------------------- */
+
+.field {
+  margin-bottom: var(--space-3);
+}
+
+.field label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: var(--space-1);
+  color: var(--color-ink);
+}
+
+.field-hint {
+  font-size: 0.8rem;
+  color: var(--color-ink-faint);
+  margin-top: 0.25rem;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--color-ink);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+}
+
+textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-tint);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+/* --- Buttons -------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.9rem;
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 1.1rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--color-ink);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #171b28;
+}
+
+.btn-secondary {
+  background: transparent;
+  border-color: var(--color-border);
+  color: var(--color-ink);
+}
+
+.btn-secondary:hover {
+  border-color: var(--color-ink-muted);
+}
+
+.btn-accent {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-row {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* --- Tabs ------------------------------------------------------------------ */
+
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.tab {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.88rem;
+  padding: 0.6rem 0.9rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+
+.tab[aria-selected="true"] {
+  color: var(--color-ink);
+  border-bottom-color: var(--color-accent);
+}
+
+/* --- Alerts ----------------------------------------------------------------- */
+
+.alert {
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.9rem;
+  font-size: 0.88rem;
+  margin: var(--space-2) 0;
+}
+
+.alert-error {
+  background: var(--color-error-tint);
+  color: var(--color-error);
+}
+
+.alert-success {
+  background: var(--color-sage-tint);
+  color: var(--color-sage);
+}
+
+/* --- Utility ----------------------------------------------------------------- */
+
+.muted {
+  color: var(--color-ink-faint);
+  font-size: 0.85rem;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
