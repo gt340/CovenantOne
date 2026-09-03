@@ -104,6 +104,14 @@ export async function GET(_request: Request, { params }: { params: { userId: str
   const redactedBusiness =
     business && (isOwnProfile || profile.showBusinessDetails) ? business : null;
 
+  let photoUrl: string | null = null;
+  if (profile.headlinePhotoKey) {
+    const { data: signed } = await supabase.storage
+      .from("profile-photos")
+      .createSignedUrl(profile.headlinePhotoKey, 300);
+    photoUrl = signed?.signedUrl ?? null;
+  }
+
   return NextResponse.json({
     ok: true,
     profile: {
@@ -113,8 +121,7 @@ export async function GET(_request: Request, { params }: { params: { userId: str
       gender: profile.gender,
       maritalStatus: profile.maritalStatus,
       bio: profile.bio,
-      headlinePhotoKey: profile.headlinePhotoKey,
-      photoKeys: profile.photoKeys,
+      photoUrl,
       skills: profile.skills,
       familyValues: profile.familyValues,
       lifeGoals: profile.lifeGoals,
@@ -122,10 +129,10 @@ export async function GET(_request: Request, { params }: { params: { userId: str
       healthyMarriageBeliefs: profile.healthyMarriageBeliefs,
       lookingForInSpouse: profile.lookingForInSpouse,
       // Deliberately NOT included, ever, in this public-facing response:
-      // phone number, email address, raw verification documents/provider
-      // references, who granted community verification, or anything from
-      // private conversations/moderation records. None of those are even
-      // queried above.
+      // phone number, email address, raw storage keys, raw verification
+      // documents/provider references, who granted community
+      // verification, or anything from private conversations/moderation
+      // records. None of those are even queried above.
     },
     location: redactedLocation,
     faith,
