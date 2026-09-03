@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 import {
   profileEssaysSchema,
   educationSchema,
@@ -147,6 +148,82 @@ export default function ProfilePage() {
   const [essaysSaving, setEssaysSaving] = useState(false);
   const [essaysError, setEssaysError] = useState<string | null>(null);
   const [essaysSaved, setEssaysSaved] = useState(false);
+
+  // --- Photo upload state ---
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+
+  const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
+  const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // must match the bucket's file_size_limit (migration 0008)
+
+  async function handlePhotoSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+
+    setPhotoError(null);
+
+    if (!ALLOWED_PHOTO_TYPES.includes(file.type)) {
+      setPhotoError("Please choose a JPEG, PNG, or WEBP image.");
+      return;
+    }
+    if (file.size > MAX_PHOTO_BYTES) {
+      setPhotoError("That image is too large — please choose one under 5MB.");
+      return;
+    }
+
+    const userId = (data?.profile as { userId?: string } | null)?.userId;
+    if (!userId) {
+      setPhotoError("Couldn't determine your account — try reloading the page.");
+      return;
+    }
+
+    setPhotoUploading(true);
+    const supabase = createClient();
+    const extension = file.name.split(".").pop() || "jpg";
+    const storageKey = `${userId}/${Date.now()}.${extension}`;
+
+    // Direct browser-to-storage upload — the standard pattern, respecting
+    // the same storage RLS policies as any other request (migration 0008),
+    // rather than proxying binary data through our own serverless function.
+    const { error: uploadError } = await supabase.storage
+      .from("profile-photos")
+      .upload(storageKey, file, { contentType: file.type, upsert: false });
+
+    if (uploadError) {
+      setPhotoUploading(false);
+      setPhotoError(uploadError.message || "Upload failed. Please try again.");
+      return;
+    }
+
+    const res = await fetch("/api/profile/photo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ storageKey }),
+    });
+    const body = await res.json();
+    setPhotoUploading(false);
+
+    if (!res.ok || !body.ok) {
+      setPhotoError(body.error ?? "Something went wrong saving your photo.");
+      return;
+    }
+
+    await load();
+  }
+
+  async function handlePhotoRemove() {
+    setPhotoError(null);
+    setPhotoUploading(true);
+    const res = await fetch("/api/profile/photo", { method: "DELETE" });
+    const body = await res.json();
+    setPhotoUploading(false);
+    if (!res.ok || !body.ok) {
+      setPhotoError(body.error ?? "Couldn't remove your photo.");
+      return;
+    }
+    await load();
+  }
 
   // --- Education section state ---
   const [education, setEducation] = useState({ level: "", fieldOfStudy: "", institution: "" });
@@ -342,12 +419,22 @@ export default function ProfilePage() {
 
   const p = data.profile ?? {};
   const initial = ((p.displayName as string) ?? "?").charAt(0).toUpperCase();
+  const photoUrl = (p.photoUrl as string | null) ?? null;
 
   return (
     <main className="page">
       <div className="card">
         <div className="profile-header">
-          <div className="profile-avatar">{initial}</div>
+          {photoUrl ? (
+            <img
+              src={photoUrl}
+              alt=""
+              className="profile-avatar"
+              style={{ objectFit: "cover" }}
+            />
+          ) : (
+            <div className="profile-avatar">{initial}</div>
+          )}
           <div>
             <h1>{(p.displayName as string) ?? "Your profile"}</h1>
             <p className="muted">
@@ -367,6 +454,31 @@ export default function ProfilePage() {
             Still missing: {data.completion.missingFields.join(", ")}
           </p>
         )}
+
+        <div className="btn-row" style={{ marginTop: "1rem" }}>
+          <label className="btn btn-secondary" style={{ cursor: "pointer" }}>
+            {photoUploading ? "Uploading..." : photoUrl ? "Replace photo" : "Add a profile photo"}
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={handlePhotoSelect}
+              disabled={photoUploading}
+              style={{ display: "none" }}
+            />
+          </label>
+          {photoUrl && (
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={handlePhotoRemove}
+              disabled={photoUploading}
+            >
+              Remove photo
+            </button>
+          )}
+        </div>
+        {photoError && <p className="alert alert-error">{photoError}</p>}
+        <p className="field-hint">JPEG, PNG, or WEBP, up to 5MB.</p>
       </div>
 
       <div className="tabs" role="tablist">
