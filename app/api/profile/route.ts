@@ -51,6 +51,18 @@ export async function GET() {
     data: { user: authUser },
   } = await supabase.auth.getUser();
 
+  let photoUrl: string | null = null;
+  if (profile?.headlinePhotoKey) {
+    // Short-lived on purpose — regenerated fresh on every profile fetch
+    // rather than cached, matching the rest of this route's "no stale
+    // derived data" approach. See migration 0008 for the storage RLS this
+    // depends on.
+    const { data: signed } = await supabase.storage
+      .from("profile-photos")
+      .createSignedUrl(profile.headlinePhotoKey, 300);
+    photoUrl = signed?.signedUrl ?? null;
+  }
+
   const interestNames = (memberInterests ?? [])
     .map((row: { interests: { name: string } | { name: string }[] | null }) => {
       const rel = row.interests;
@@ -87,7 +99,7 @@ export async function GET() {
   return NextResponse.json({
     ok: true,
     profile: profile
-      ? { ...profile, age: calculateAge(new Date(profile.dateOfBirth)) }
+      ? { ...profile, age: calculateAge(new Date(profile.dateOfBirth)), photoUrl }
       : null,
     location,
     faith,
