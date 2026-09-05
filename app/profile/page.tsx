@@ -154,7 +154,7 @@ export default function ProfilePage() {
   const [photoError, setPhotoError] = useState<string | null>(null);
 
   const ALLOWED_PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
-  const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // must match the bucket's file_size_limit (migration 0008)
+  const MAX_PHOTO_BYTES = 2 * 1024 * 1024; // must match the bucket's file_size_limit (updated post-migration-0008, see prisma/migrations/0009_reduce_photo_size_limit)
 
   async function handlePhotoSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -478,7 +478,7 @@ export default function ProfilePage() {
           )}
         </div>
         {photoError && <p className="alert alert-error">{photoError}</p>}
-        <p className="field-hint">JPEG, PNG, or WEBP, up to 5MB.</p>
+        <p className="field-hint">JPEG, PNG, or WEBP, up to 2MB.</p>
       </div>
 
       <div className="tabs" role="tablist">
