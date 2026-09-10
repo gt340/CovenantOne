@@ -203,7 +203,7 @@ export async function runDiscoverySearch(
     ) {
       continue;
     }
-    if (params.nameSearch && !row.member_profiles.displayName?.toLowerCase().includes(params.nameSearch)) {
+    if (params.nameSearch && !(row.member_profiles as any)?.displayName?.toLowerCase().includes(params.nameSearch)) {
       continue;
     }
 
