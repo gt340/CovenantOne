@@ -28,7 +28,7 @@ export function ageFromDob(dob: string): number {
 
 const SELECT_SHAPE = `
   id, status, createdAt,
-  member_profiles!inner(userId, displayName, gender, headlinePhotoKey, isDiscoverable, lifeGoals, familyValues, showExactLocation, showOccupationDetails, showBusinessDetails),
+  member_profiles!member_profiles_userId_fkey!inner(userId, displayName, gender, headlinePhotoKey, isDiscoverable, lifeGoals, familyValues, showExactLocation, showOccupationDetails, showBusinessDetails),
   location_profiles(country, region, city, willingToRelocate),
   faith_profiles(faithImportance, denomination),
   education_records(level, fieldOfStudy),
@@ -86,7 +86,7 @@ export async function runDiscoverySearch(
 
   const { data: viewerRow, error: viewerError } = await admin
     .from("users")
-    .select(SELECT_SHAPE.replace("member_profiles!inner", "member_profiles"))
+    .select(SELECT_SHAPE.replace("member_profiles!member_profiles_userId_fkey!inner", "member_profiles!member_profiles_userId_fkey"))
     .eq("id", authedUserId)
     .single();
 
