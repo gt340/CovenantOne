@@ -31,7 +31,7 @@ async function getAuthedUser() {
   return user;
 }
 
-type Action = "accept" | "decline" | "withdraw";
+type Action = "accept" | "decline" | "not_now" | "withdraw" | "block";
 
 export async function PATCH(
   request: NextRequest,
@@ -43,16 +43,16 @@ export async function PATCH(
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  let body: { action?: Action };
+  let body: { action?: Action; reason?: string };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
   const action = body.action;
-  if (!action || !["accept", "decline", "withdraw"].includes(action)) {
+  if (!action || !["accept", "decline", "not_now", "withdraw", "block"].includes(action)) {
     return NextResponse.json(
-      { error: "action must be 'accept', 'decline', or 'withdraw'" },
+      { error: "action must be 'accept', 'decline', 'not_now', 'withdraw', or 'block'" },
       { status: 400 }
     );
   }
@@ -75,13 +75,13 @@ export async function PATCH(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  if (action === "accept" || action === "decline") {
-    if (!isRecipient) {
-      return NextResponse.json(
-        { error: "Only the recipient can accept or decline a request" },
-        { status: 403 }
-      );
-    }
+  // Only the recipient can accept, decline, not-now, or block. Only the
+  // requester can withdraw their own request.
+  if (["accept", "decline", "not_now", "block"].includes(action) && !isRecipient) {
+    return NextResponse.json(
+      { error: "Only the recipient can respond to this request" },
+      { status: 403 }
+    );
   }
   if (action === "withdraw" && !isRequester) {
     return NextResponse.json({ error: "Only the requester can withdraw a request" }, { status: 403 });
@@ -98,13 +98,20 @@ export async function PATCH(
     return NextResponse.json({ error: "This request has expired" }, { status: 409 });
   }
 
-  const newStatus = action === "accept" ? "ACCEPTED" : action === "decline" ? "DECLINED" : "WITHDRAWN";
+  const statusByAction: Record<Action, string> = {
+    accept: "ACCEPTED",
+    decline: "DECLINED",
+    not_now: "NOT_NOW",
+    withdraw: "WITHDRAWN",
+    block: "DECLINED", // blocking implies declining; the block itself is recorded separately
+  };
+  const newStatus = statusByAction[action];
 
   const { data: updated, error: updateError } = await admin
     .from("introduction_requests")
     .update({ status: newStatus, respondedAt: new Date().toISOString() })
     .eq("id", id)
-    .eq("status", "PENDING") // guards against a race with a second simultaneous response
+    .eq("status", "PENDING") // race guard
     .select()
     .single();
 
@@ -113,6 +120,8 @@ export async function PATCH(
   }
 
   let connection = null;
+  let blocked = false;
+
   if (action === "accept") {
     const [userAId, userBId] = [introRequest.requesterId, introRequest.recipientId].sort();
     const { data: createdConnection, error: connectionError } = await admin
@@ -128,9 +137,6 @@ export async function PATCH(
       .single();
 
     if (connectionError) {
-      // The request is already marked ACCEPTED; surface the connection
-      // failure separately so it can be retried/investigated rather than
-      // silently leaving an accepted request with no connection.
       return NextResponse.json(
         {
           ...updated,
@@ -140,7 +146,22 @@ export async function PATCH(
       );
     }
     connection = createdConnection;
+
+    await admin.from("relationship_stages").insert({
+      connectionId: createdConnection.id,
+      stage: "FRIENDSHIP",
+      initiatedByUserId: authedUser.id,
+      notes: "Connection began after introduction was accepted.",
+    });
   }
 
-  return NextResponse.json({ ...updated, connection });
+  if (action === "block") {
+    const { error: blockError } = await admin.from("blocks").insert({
+      blockerId: authedUser.id,
+      blockedId: introRequest.requesterId,
+    });
+    blocked = !blockError;
+  }
+
+  return NextResponse.json({ ...updated, connection, blocked });
 }
