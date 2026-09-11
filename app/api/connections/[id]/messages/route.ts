@@ -97,8 +97,8 @@ export async function GET(
   const messages = (rows ?? []).map((m: any) => {
     let content = "";
     try {
-      const ciphertext = Buffer.from(m.ciphertext, "hex");
-      const nonce = Buffer.from(m.nonce, "hex");
+    const ciphertext = Buffer.from(m.ciphertext.replace(/^\\x/, ""), "hex");
+    const nonce = Buffer.from(m.nonce.replace(/^\\x/, ""), "hex");
       content = m.type === "TEXT" ? decryptMessage(ciphertext, nonce) : "";
     } catch {
       content = "[Unable to decrypt this message]";
@@ -177,8 +177,8 @@ export async function POST(
       conversationId,
       senderId: user.id,
       type: "TEXT",
-      ciphertext: ciphertext.toString("hex"),
-      nonce: nonce.toString("hex"),
+      ciphertext: "\\x" + ciphertext.toString("hex"),
+nonce: "\\x" + nonce.toString("hex"),
     })
     .select("id, createdAt")
     .single();
