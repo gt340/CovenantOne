@@ -32,11 +32,6 @@ async function getAuthedClientAndUser() {
   return { supabase, user };
 }
 
-/** Conversations have no INSERT policy for regular users by design (RLS
- * only grants SELECT to participants) — so getting or creating the one
- * conversation for a connection has to go through the service role. This
- * is the only privileged step in this route; everything else runs on the
- * caller's own session. */
 async function getOrCreateConversation(connectionId: string) {
   const admin = getAdminClient();
   const { data: existing } = await admin
@@ -86,7 +81,6 @@ export async function GET(
     .from("messages")
     .select("id, senderId, type, ciphertext, nonce, readAt, deletedAt, createdAt")
     .eq("conversationId", conversationId)
-    .is("deletedAt", null)
     .order("createdAt", { ascending: true })
     .limit(200);
 
@@ -94,27 +88,72 @@ export async function GET(
     return NextResponse.json({ error: msgError.message }, { status: 500 });
   }
 
-  const messages = (rows ?? []).map((m: any) => {
-    let content = "";
-    try {
-    const ciphertext = Buffer.from(m.ciphertext.replace(/^\\x/, ""), "hex");
-    const nonce = Buffer.from(m.nonce.replace(/^\\x/, ""), "hex");
-      content = m.type === "TEXT" ? decryptMessage(ciphertext, nonce) : "";
-    } catch {
-      content = "[Unable to decrypt this message]";
-    }
-    return {
-      id: m.id,
-      senderId: m.senderId,
-      isMine: m.senderId === user.id,
-      type: m.type,
-      content,
-      readAt: m.readAt,
-      createdAt: m.createdAt,
-    };
-  });
+  const admin = getAdminClient();
+  const voiceMessageIds = (rows ?? []).filter((m: any) => m.type === "VOICE" && !m.deletedAt).map((m: any) => m.id);
+  const voiceByMessage = new Map<string, { audioStorageKey: string; durationSeconds: number }>();
+  if (voiceMessageIds.length) {
+    const { data: voiceRows } = await admin
+      .from("voice_messages")
+      .select("messageId, audioStorageKey, durationSeconds")
+      .in("messageId", voiceMessageIds);
+    (voiceRows ?? []).forEach((v: any) => voiceByMessage.set(v.messageId, v));
+  }
 
-  // Mark the other person's messages as read now that I've fetched them.
+  const messages = await Promise.all(
+    (rows ?? []).map(async (m: any) => {
+      if (m.deletedAt) {
+        return {
+          id: m.id,
+          senderId: m.senderId,
+          isMine: m.senderId === user.id,
+          type: m.type,
+          content: "[deleted]",
+          deleted: true,
+          readAt: m.readAt,
+          createdAt: m.createdAt,
+        };
+      }
+      if (m.type === "VOICE") {
+        const voice = voiceByMessage.get(m.id);
+        let audioUrl: string | null = null;
+        if (voice) {
+          const { data: signed } = await admin.storage
+            .from("voice-messages")
+            .createSignedUrl(voice.audioStorageKey, 3600);
+          audioUrl = signed?.signedUrl ?? null;
+        }
+        return {
+          id: m.id,
+          senderId: m.senderId,
+          isMine: m.senderId === user.id,
+          type: "VOICE",
+          audioUrl,
+          durationSeconds: voice?.durationSeconds ?? null,
+          readAt: m.readAt,
+          createdAt: m.createdAt,
+        };
+      }
+      // TEXT (or SYSTEM, stored the same way)
+      let content = "";
+      try {
+        const ciphertext = Buffer.from(m.ciphertext.replace(/^\\x/, ""), "hex");
+        const nonce = Buffer.from(m.nonce.replace(/^\\x/, ""), "hex");
+        content = decryptMessage(ciphertext, nonce);
+      } catch {
+        content = "[Unable to decrypt this message]";
+      }
+      return {
+        id: m.id,
+        senderId: m.senderId,
+        isMine: m.senderId === user.id,
+        type: m.type,
+        content,
+        readAt: m.readAt,
+        createdAt: m.createdAt,
+      };
+    })
+  );
+
   const unreadIds = (rows ?? [])
     .filter((m: any) => m.senderId !== user.id && !m.readAt)
     .map((m: any) => m.id);
@@ -178,7 +217,7 @@ export async function POST(
       senderId: user.id,
       type: "TEXT",
       ciphertext: "\\x" + ciphertext.toString("hex"),
-nonce: "\\x" + nonce.toString("hex"),
+      nonce: "\\x" + nonce.toString("hex"),
     })
     .select("id, createdAt")
     .single();
