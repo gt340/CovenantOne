@@ -490,6 +490,8 @@ function MessagesTab({
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
+  const recordingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -556,6 +558,10 @@ function MessagesTab({
       };
       mediaRecorderRef.current = recorder;
       recordStartRef.current = Date.now();
+      setRecordingElapsed(0);
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingElapsed(Math.floor((Date.now() - recordStartRef.current) / 1000));
+      }, 250);
       recorder.start();
       setRecording(true);
     } catch {
@@ -565,7 +571,12 @@ function MessagesTab({
 
   function stopRecording() {
     mediaRecorderRef.current?.stop();
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
     setRecording(false);
+    setRecordingElapsed(0);
   }
 
   async function handleRecordedAudio() {
@@ -675,7 +686,7 @@ function MessagesTab({
               recording ? "bg-red-600 text-white border-red-600" : "text-gray-600"
             }`}
           >
-            {recording ? "● Recording..." : "🎙"}
+            {recording ? `● ${formatDuration(recordingElapsed)}` : "🎙"}
           </button>
           <input
             type="text"
