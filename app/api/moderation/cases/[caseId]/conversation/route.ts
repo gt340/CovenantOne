@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { decryptMessage } from "@/lib/messageEncryption";
+
+function getAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
+}
 
 async function getAuthedClientAndUser() {
   const cookieStore = await cookies();
@@ -24,27 +33,24 @@ async function getAuthedClientAndUser() {
 }
 
 /**
- * SECURITY NOTE: this route does not itself decide whether the caller is
- * allowed to see the conversation — the database does, via the
- * `messages_select_moderation_case` / `conversations_select_moderation_case`
- * RLS policies (private.has_active_moderation_access), which require an
- * OPEN/INVESTIGATING/ESCALATED case assigned to this exact user, at
- * SAFETY_MODERATOR tier or above. If the caller doesn't qualify, the
- * queries below simply return zero rows — there is no separate bypass
- * path. Every access that returns data is logged to audit_logs below;
- * a query returning nothing (unauthorized, or genuinely empty) is not
- * logged, since nothing was actually accessed.
+ * SECURITY NOTE: the REAL authorization boundary in this route is the
+ * final messages SELECT, run on the caller's own RLS-scoped session —
+ * RLS (private.has_active_moderation_access) silently returns zero rows
+ * if this caller isn't a properly-assigned SAFETY_MODERATOR-tier user on
+ * an open case for that conversation. There is no other path to the
+ * message content.
  *
- * Conversation resolution below tries every applicable strategy and
- * merges the results, rather than an either/or chain — a report's
- * relatedContentType may point at a conversation, a message, or (as the
- * general "report this person" flow does) a connection, and regardless
- * we also always check reportedUserId's own connections as a fallback.
- * This was tightened after finding the connection-based report path
- * had been silently mislabeled as relatedContentType "conversation"
- * with a connection id, which meant a real report+case resolved to
- * zero conversations. RLS itself was never at risk — this fixes the
- * app-level lookup, not the authorization boundary.
+ * The steps BEFORE that (figuring out which conversation a report is
+ * even talking about) are not a security boundary — they're just
+ * bookkeeping to resolve an id — but they were incorrectly run on the
+ * caller's own session in an earlier version of this file, which
+ * silently broke: `connections` has no RLS policy granting a
+ * SAFETY_MODERATOR read access to a connection they're not part of, so
+ * the lookup itself returned nothing before authorization was ever
+ * checked. Fixed by using a privileged client only for this resolution
+ * step. This does not weaken security: it only helps find the right id
+ * to look up, and the actual read of message content below still goes
+ * through the caller's own session and real RLS enforcement.
  */
 export async function GET(
   request: NextRequest,
@@ -60,7 +66,9 @@ export async function GET(
     return NextResponse.json({ error: "A reason query parameter is required for every access" }, { status: 400 });
   }
 
-  const { data: modCase, error: caseError } = await supabase
+  const admin = getAdminClient();
+
+  const { data: modCase, error: caseError } = await admin
     .from("moderation_cases")
     .select("id, reportId, assignedModeratorId, status")
     .eq("id", caseId)
@@ -68,8 +76,15 @@ export async function GET(
   if (caseError || !modCase) {
     return NextResponse.json({ error: "Case not found" }, { status: 404 });
   }
+  // The case must actually be assigned to this exact caller — checked
+  // here explicitly since we're about to use a privileged client for
+  // resolution and want to fail fast rather than rely solely on the
+  // final RLS check for this cheap, obvious mismatch.
+  if (modCase.assignedModeratorId !== user.id) {
+    return NextResponse.json({ conversations: [] });
+  }
 
-  const { data: report } = await supabase
+  const { data: report } = await admin
     .from("reports")
     .select("relatedContentType, relatedContentId, reportedUserId")
     .eq("id", modCase.reportId)
@@ -81,7 +96,7 @@ export async function GET(
     conversationIdSet.add(report.relatedContentId);
   }
   if (report?.relatedContentType === "connection" && report.relatedContentId) {
-    const { data: conv } = await supabase
+    const { data: conv } = await admin
       .from("conversations")
       .select("id")
       .eq("connectionId", report.relatedContentId)
@@ -89,23 +104,20 @@ export async function GET(
     if (conv) conversationIdSet.add(conv.id);
   }
   if (report?.relatedContentType === "message" && report.relatedContentId) {
-    const { data: msg } = await supabase
+    const { data: msg } = await admin
       .from("messages")
       .select("conversationId")
       .eq("id", report.relatedContentId)
       .maybeSingle();
     if (msg) conversationIdSet.add(msg.conversationId);
   }
-  // Always also resolve via reportedUserId's own connections, regardless
-  // of relatedContentType — covers the general "report this person" case
-  // and any mislabeled/missing relatedContentType.
   if (report?.reportedUserId) {
-    const { data: conns } = await supabase
+    const { data: conns } = await admin
       .from("connections")
       .select("id")
       .or(`userAId.eq.${report.reportedUserId},userBId.eq.${report.reportedUserId}`);
     if (conns?.length) {
-      const { data: convs } = await supabase
+      const { data: convs } = await admin
         .from("conversations")
         .select("id")
         .in("connectionId", conns.map((c: any) => c.id));
@@ -120,9 +132,10 @@ export async function GET(
 
   const results = [];
   for (const conversationId of conversationIds) {
-    // This SELECT is the actual authorization check — RLS silently
-    // returns zero rows if has_active_moderation_access() is false for
-    // this caller and conversation, regardless of what was resolved above.
+    // THE authorization check: run on the caller's own session, gated
+    // by private.has_active_moderation_access() via RLS. Returns zero
+    // rows unless this caller is genuinely the assigned SAFETY_MODERATOR
+    // (or above) on an open case referencing this exact conversation.
     const { data: rows } = await supabase
       .from("messages")
       .select("id, senderId, type, ciphertext, nonce, deletedAt, createdAt")
@@ -153,6 +166,9 @@ export async function GET(
 
     results.push({ conversationId, messages });
 
+    // Mandatory audit record — uses the caller's own session too, so
+    // this insert is itself subject to the audit_logs RLS insert policy
+    // (actorUserId must equal auth.uid()), not just app-level trust.
     await supabase.from("audit_logs").insert({
       actorUserId: user.id,
       action: "MODERATION_CONVERSATION_ACCESSED",
