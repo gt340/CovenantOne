@@ -384,7 +384,7 @@ function ReportModal({
   otherMemberName: string;
   onClose: () => void;
 }) {
-  const [category, setCategory] = useState(REPORT_CATEGORIES[0].value);
+  const [category, setCategory] = useState<string>(REPORT_CATEGORIES[0].value);
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
