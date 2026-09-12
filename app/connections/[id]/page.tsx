@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { REPORT_CATEGORIES } from "@/lib/reportCategories";
 
 type StageData = {
   connection: {
@@ -31,7 +32,11 @@ type Message = {
   id: string;
   senderId: string;
   isMine: boolean;
-  content: string;
+  type: "TEXT" | "VOICE" | "SYSTEM";
+  content?: string;
+  audioUrl?: string | null;
+  durationSeconds?: number | null;
+  deleted?: boolean;
   readAt: string | null;
   createdAt: string;
 };
@@ -45,7 +50,18 @@ type MentorInvite = {
   createdAt: string;
 };
 
-type Tab = "journey" | "messages" | "mentors";
+type CallRecord = {
+  id: string;
+  initiatorId: string;
+  type: "AUDIO" | "VIDEO";
+  status: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  createdAt: string;
+};
+
+type Tab = "journey" | "messages" | "calls" | "mentors";
 
 export default function ConnectionJourneyPage() {
   const params = useParams();
@@ -59,6 +75,8 @@ export default function ConnectionJourneyPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [showSafety, setShowSafety] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [reportTarget, setReportTarget] = useState<{ userId: string; messageId?: string } | null>(null);
+  const [archived, setArchived] = useState(false);
 
   const loadStage = useCallback(async () => {
     try {
@@ -100,6 +118,23 @@ export default function ConnectionJourneyPage() {
     }
   }
 
+  async function doBlock() {
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/connections/${connectionId}/block`, { method: "POST", credentials: "include" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Request failed (${res.status})`);
+      }
+      await loadStage();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not block.");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   if (loading) return <div className="max-w-2xl mx-auto px-4 py-12 text-center text-gray-400">Loading...</div>;
   if (error || !data) {
     return (
@@ -123,21 +158,46 @@ export default function ConnectionJourneyPage() {
         ← Back to Connections
       </Link>
 
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-14 h-14 rounded-full bg-gray-100 overflow-hidden flex-shrink-0">
-          {otherMember.headlinePhotoUrl ? (
-            <img src={otherMember.headlinePhotoUrl} alt="" className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-gray-300 text-xl">
-              {otherMember.displayName?.[0] ?? "?"}
-            </div>
-          )}
-        </div>
-        <div>
-          <h1 className="text-xl font-semibold">{otherMember.displayName}</h1>
-          <div className="text-sm text-gray-500">
-            {isEnded ? "Connection ended" : connection.currentStageLabel}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-14 h-14 rounded-full bg-gray-100 overflow-hidden flex-shrink-0">
+            {otherMember.headlinePhotoUrl ? (
+              <img src={otherMember.headlinePhotoUrl} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-gray-300 text-xl">
+                {otherMember.displayName?.[0] ?? "?"}
+              </div>
+            )}
           </div>
+          <div>
+            <h1 className="text-xl font-semibold">{otherMember.displayName}</h1>
+            <div className="text-sm text-gray-500">
+              {isEnded ? "Connection ended" : connection.currentStageLabel}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            onClick={() => setReportTarget({ userId: otherMember.id })}
+            className="text-xs text-gray-400 underline whitespace-nowrap"
+          >
+            Report
+          </button>
+          <button
+            onClick={async () => {
+              const nextArchived = !archived;
+              setArchived(nextArchived);
+              await fetch(`/api/connections/${connectionId}/conversation`, {
+                method: "PATCH",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: nextArchived ? "archive" : "unarchive" }),
+              });
+            }}
+            className="text-xs text-gray-400 underline whitespace-nowrap"
+          >
+            {archived ? "Unarchive" : "Archive"} conversation
+          </button>
         </div>
       </div>
 
@@ -155,12 +215,12 @@ export default function ConnectionJourneyPage() {
         </ul>
       )}
 
-      <div className="flex gap-2 mb-4 border-b">
-        {(["journey", "messages", "mentors"] as Tab[]).map((t) => (
+      <div className="flex gap-2 mb-4 border-b overflow-x-auto">
+        {(["journey", "messages", "calls", "mentors"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px capitalize ${
+            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px capitalize whitespace-nowrap ${
               tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500"
             }`}
           >
@@ -252,9 +312,9 @@ export default function ConnectionJourneyPage() {
           </div>
 
           {!isEnded && (
-            <div className="border-t pt-4">
+            <div className="border-t pt-4 space-y-3">
               {!showEndConfirm ? (
-                <button onClick={() => setShowEndConfirm(true)} className="text-xs text-gray-400 underline">
+                <button onClick={() => setShowEndConfirm(true)} className="text-xs text-gray-400 underline block">
                   End this connection
                 </button>
               ) : (
@@ -277,24 +337,164 @@ export default function ConnectionJourneyPage() {
                   </div>
                 </div>
               )}
+              <button onClick={doBlock} disabled={actionBusy} className="text-xs text-red-400 underline block">
+                Block {otherMember.displayName}
+              </button>
             </div>
           )}
         </div>
       )}
 
-      {tab === "messages" && <MessagesTab connectionId={connectionId} disabled={isEnded} />}
+      {tab === "messages" && (
+        <MessagesTab
+          connectionId={connectionId}
+          disabled={isEnded}
+          otherMemberId={otherMember.id}
+          onReport={(messageId) => setReportTarget({ userId: otherMember.id, messageId })}
+        />
+      )}
+      {tab === "calls" && (
+        <CallsTab connectionId={connectionId} disabled={isEnded} otherMemberName={otherMember.displayName} />
+      )}
       {tab === "mentors" && <MentorsTab connectionId={connectionId} otherMemberName={otherMember.displayName} />}
+
+      {reportTarget && (
+        <ReportModal
+          userId={reportTarget.userId}
+          messageId={reportTarget.messageId}
+          connectionId={connectionId}
+          otherMemberName={otherMember.displayName}
+          onClose={() => setReportTarget(null)}
+        />
+      )}
     </div>
   );
 }
 
-function MessagesTab({ connectionId, disabled }: { connectionId: string; disabled: boolean }) {
+function ReportModal({
+  userId,
+  messageId,
+  connectionId,
+  otherMemberName,
+  onClose,
+}: {
+  userId: string;
+  messageId?: string;
+  connectionId: string;
+  otherMemberName: string;
+  onClose: () => void;
+}) {
+  const [category, setCategory] = useState(REPORT_CATEGORIES[0].value);
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function submit() {
+    if (!description.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/reports", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reportedUserId: userId,
+          category,
+          description: description.trim(),
+          messageId,
+          conversationId: messageId ? undefined : connectionId,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Request failed (${res.status})`);
+      }
+      setDone(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not submit report.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center px-4 z-50">
+      <div className="bg-white rounded-lg max-w-sm w-full p-5">
+        {done ? (
+          <>
+            <h2 className="font-semibold mb-2">Report submitted</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Thank you — our safety team will review this. You can keep using the platform normally.
+            </p>
+            <button onClick={onClose} className="text-sm px-3 py-1.5 rounded-md border">
+              Close
+            </button>
+          </>
+        ) : (
+          <>
+            <h2 className="font-semibold mb-1">{messageId ? "Report this message" : `Report ${otherMemberName}`}</h2>
+            <p className="text-sm text-gray-500 mb-3">Help us keep the community safe.</p>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full border rounded-md px-3 py-2 text-sm mb-2"
+            >
+              {REPORT_CATEGORIES.map((c) => (
+                <option key={c.label} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What happened? (required)"
+              rows={3}
+              className="w-full border rounded-md px-3 py-2 text-sm mb-2"
+            />
+            {error && <div className="text-red-600 text-xs mb-2">{error}</div>}
+            <div className="flex justify-end gap-2 mt-2">
+              <button onClick={onClose} disabled={submitting} className="px-3 py-1.5 text-sm rounded-md border">
+                Cancel
+              </button>
+              <button
+                onClick={submit}
+                disabled={submitting || !description.trim()}
+                className="px-3 py-1.5 text-sm rounded-md bg-red-600 text-white disabled:opacity-50"
+              >
+                {submitting ? "Submitting..." : "Submit Report"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MessagesTab({
+  connectionId,
+  disabled,
+  onReport,
+}: {
+  connectionId: string;
+  disabled: boolean;
+  otherMemberId: string;
+  onReport: (messageId: string) => void;
+}) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordError, setRecordError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const recordStartRef = useRef<number>(0);
 
   const load = useCallback(async () => {
     try {
@@ -343,6 +543,67 @@ function MessagesTab({ connectionId, disabled }: { connectionId: string; disable
     }
   }
 
+  async function startRecording() {
+    setRecordError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (e) => chunksRef.current.push(e.data);
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        void handleRecordedAudio();
+      };
+      mediaRecorderRef.current = recorder;
+      recordStartRef.current = Date.now();
+      recorder.start();
+      setRecording(true);
+    } catch {
+      setRecordError("Microphone access is needed to record a voice message.");
+    }
+  }
+
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+    setRecording(false);
+  }
+
+  async function handleRecordedAudio() {
+    const durationSeconds = Math.max(1, Math.round((Date.now() - recordStartRef.current) / 1000));
+    const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+    if (blob.size === 0) return;
+
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        resolve(result.split(",")[1] ?? "");
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    setSending(true);
+    try {
+      const res = await fetch(`/api/connections/${connectionId}/messages/voice`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioBase64: base64, durationSeconds, mimeType: "audio/webm" }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Request failed (${res.status})`);
+      }
+      const newMsg: Message = await res.json();
+      setMessages((prev) => [...prev, newMsg]);
+    } catch (err) {
+      setRecordError(err instanceof Error ? err.message : "Could not send voice message.");
+    } finally {
+      setSending(false);
+    }
+  }
+
   if (loading) return <div className="text-center text-gray-400 py-12">Loading messages...</div>;
 
   return (
@@ -352,21 +613,47 @@ function MessagesTab({ connectionId, disabled }: { connectionId: string; disable
           {error}
         </div>
       )}
+      {recordError && (
+        <div className="border border-red-200 bg-red-50 text-red-700 text-sm rounded-md px-4 py-3 mb-3">
+          {recordError}
+        </div>
+      )}
       <div className="flex-1 space-y-2 mb-3">
         {messages.length === 0 && (
           <div className="text-center text-gray-400 py-8 text-sm">No messages yet — say hello.</div>
         )}
         {messages.map((m) => (
           <div key={m.id} className={`flex ${m.isMine ? "justify-end" : "justify-start"}`}>
-            <div
-              className={`max-w-[75%] rounded-lg px-3 py-2 text-sm ${
-                m.isMine ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
-              }`}
-            >
-              {m.content}
-              <div className={`text-[10px] mt-1 ${m.isMine ? "text-blue-100" : "text-gray-400"}`}>
-                {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            <div className="max-w-[75%] group">
+              <div
+                className={`rounded-lg px-3 py-2 text-sm ${
+                  m.isMine ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-800"
+                }`}
+              >
+                {m.deleted ? (
+                  <span className="italic opacity-70">Message deleted</span>
+                ) : m.type === "VOICE" ? (
+                  m.audioUrl ? (
+                    <audio controls src={m.audioUrl} className="max-w-full" style={{ height: 32 }} />
+                  ) : (
+                    <span className="italic opacity-70">Voice message unavailable</span>
+                  )
+                ) : (
+                  m.content
+                )}
+                <div className={`text-[10px] mt-1 ${m.isMine ? "text-blue-100" : "text-gray-400"}`}>
+                  {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </div>
               </div>
+              {!m.deleted && (
+                <div className={`flex gap-2 mt-0.5 text-[10px] ${m.isMine ? "justify-end" : "justify-start"}`}>
+                  {!m.isMine && (
+                    <button onClick={() => onReport(m.id)} className="text-gray-400 underline">
+                      Report
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -377,7 +664,19 @@ function MessagesTab({ connectionId, disabled }: { connectionId: string; disable
           This connection has ended — message history is kept but new messages can't be sent.
         </div>
       ) : (
-        <div className="flex gap-2 border-t pt-3">
+        <div className="flex gap-2 border-t pt-3 items-center">
+          <button
+            onMouseDown={startRecording}
+            onMouseUp={stopRecording}
+            onTouchStart={startRecording}
+            onTouchEnd={stopRecording}
+            disabled={sending}
+            className={`px-3 py-2 text-sm rounded-md border flex-shrink-0 ${
+              recording ? "bg-red-600 text-white border-red-600" : "text-gray-600"
+            }`}
+          >
+            {recording ? "● Recording..." : "🎙"}
+          </button>
           <input
             type="text"
             value={draft}
@@ -395,6 +694,132 @@ function MessagesTab({ connectionId, disabled }: { connectionId: string; disable
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function CallsTab({
+  connectionId,
+  disabled,
+  otherMemberName,
+}: {
+  connectionId: string;
+  disabled: boolean;
+  otherMemberName: string;
+}) {
+  const [calls, setCalls] = useState<CallRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/connections/${connectionId}/calls`, { credentials: "include" });
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      const data = await res.json();
+      setCalls(data.calls ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load call history.");
+    } finally {
+      setLoading(false);
+    }
+  }, [connectionId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function startCall(type: "AUDIO" | "VIDEO") {
+    setStarting(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/connections/${connectionId}/calls`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Request failed (${res.status})`);
+      }
+      const call = await res.json();
+      if (call.providerConnected === false) {
+        setNotice(call.message);
+      }
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start call.");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  const statusColor: Record<string, string> = {
+    INITIATED: "bg-yellow-50 text-yellow-700",
+    RINGING: "bg-yellow-50 text-yellow-700",
+    ACCEPTED: "bg-green-50 text-green-700",
+    DECLINED: "bg-gray-100 text-gray-500",
+    MISSED: "bg-gray-100 text-gray-500",
+    ENDED: "bg-gray-100 text-gray-500",
+    FAILED: "bg-red-50 text-red-600",
+  };
+
+  return (
+    <div>
+      {notice && (
+        <div className="border border-amber-200 bg-amber-50 text-amber-800 text-sm rounded-md px-4 py-3 mb-4">
+          {notice}
+        </div>
+      )}
+      {error && (
+        <div className="border border-red-200 bg-red-50 text-red-700 text-sm rounded-md px-4 py-3 mb-4">
+          {error}
+        </div>
+      )}
+
+      {!disabled && (
+        <div className="flex gap-2 mb-5">
+          <button
+            onClick={() => startCall("AUDIO")}
+            disabled={starting}
+            className="flex-1 text-sm px-3 py-2 rounded-md border disabled:opacity-50"
+          >
+            📞 Audio call
+          </button>
+          <button
+            onClick={() => startCall("VIDEO")}
+            disabled={starting}
+            className="flex-1 text-sm px-3 py-2 rounded-md border disabled:opacity-50"
+          >
+            🎥 Video call
+          </button>
+        </div>
+      )}
+
+      <h2 className="text-sm font-semibold text-gray-700 mb-2">Call history with {otherMemberName}</h2>
+      {loading && <div className="text-center text-gray-400 py-8">Loading...</div>}
+      {!loading && calls.length === 0 && <div className="text-sm text-gray-400">No calls yet.</div>}
+      <div className="space-y-2">
+        {calls.map((c) => (
+          <div key={c.id} className="border rounded-md p-3 flex items-center justify-between">
+            <div>
+              <div className="text-sm">
+                {c.type === "VIDEO" ? "🎥" : "📞"} {c.type === "VIDEO" ? "Video" : "Audio"} call
+              </div>
+              <div className="text-xs text-gray-400">
+                {new Date(c.createdAt).toLocaleString()}
+                {c.durationSeconds ? ` · ${Math.round(c.durationSeconds / 60)} min` : ""}
+              </div>
+            </div>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${statusColor[c.status] ?? "bg-gray-100 text-gray-500"}`}>
+              {c.status}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
