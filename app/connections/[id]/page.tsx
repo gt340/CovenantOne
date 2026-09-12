@@ -497,6 +497,7 @@ function MessagesTab({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordStartRef = useRef<number>(0);
+  const cancelledRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -558,6 +559,7 @@ function MessagesTab({
       };
       mediaRecorderRef.current = recorder;
       recordStartRef.current = Date.now();
+      cancelledRef.current = false;
       setRecordingElapsed(0);
       recordingIntervalRef.current = setInterval(() => {
         setRecordingElapsed(Math.floor((Date.now() - recordStartRef.current) / 1000));
@@ -579,7 +581,17 @@ function MessagesTab({
     setRecordingElapsed(0);
   }
 
+  function discardRecording() {
+    cancelledRef.current = true;
+    stopRecording();
+  }
+
   async function handleRecordedAudio() {
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      chunksRef.current = [];
+      return;
+    }
     const durationSeconds = Math.max(1, Math.round((Date.now() - recordStartRef.current) / 1000));
     const blob = new Blob(chunksRef.current, { type: "audio/webm" });
     if (blob.size === 0) return;
@@ -612,6 +624,23 @@ function MessagesTab({
       setRecordError(err instanceof Error ? err.message : "Could not send voice message.");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function deleteMessage(messageId: string) {
+    if (!window.confirm("Delete this message? This can't be undone.")) return;
+    try {
+      const res = await fetch(`/api/connections/${connectionId}/messages/${messageId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Request failed (${res.status})`);
+      }
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, deleted: true } : m)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete message.");
     }
   }
 
@@ -663,6 +692,11 @@ function MessagesTab({
                       Report
                     </button>
                   )}
+                  {m.isMine && (
+                    <button onClick={() => deleteMessage(m.id)} className="text-gray-400 underline">
+                      Delete
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -676,33 +710,53 @@ function MessagesTab({
         </div>
       ) : (
         <div className="flex gap-2 border-t pt-3 items-center">
+          {recording && (
+            <button
+              onClick={discardRecording}
+              className="w-9 h-9 flex-shrink-0 rounded-full border border-red-200 text-red-500 flex items-center justify-center"
+              title="Discard recording"
+            >
+              🗑
+            </button>
+          )}
+          {recording ? (
+            <div className="flex-1 flex items-center gap-2 text-sm text-gray-600">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse flex-shrink-0" />
+              <span className="tabular-nums">{formatDuration(recordingElapsed)}</span>
+              <span className="text-xs text-gray-400">Release the mic to send</span>
+            </div>
+          ) : (
+            <input
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && send()}
+              placeholder="Type a message..."
+              className="flex-1 border rounded-md px-3 py-2 text-sm"
+            />
+          )}
           <button
             onMouseDown={startRecording}
             onMouseUp={stopRecording}
             onTouchStart={startRecording}
             onTouchEnd={stopRecording}
             disabled={sending}
-            className={`px-3 py-2 text-sm rounded-md border flex-shrink-0 ${
-              recording ? "bg-red-600 text-white border-red-600" : "text-gray-600"
+            className={`w-9 h-9 flex-shrink-0 rounded-full flex items-center justify-center text-sm ${
+              recording ? "bg-red-600 text-white scale-110" : "border text-gray-600"
             }`}
+            style={{ transition: "transform 0.15s" }}
           >
-            {recording ? `● ${formatDuration(recordingElapsed)}` : "🎙"}
+            🎙
           </button>
-          <input
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && send()}
-            placeholder="Type a message..."
-            className="flex-1 border rounded-md px-3 py-2 text-sm"
-          />
-          <button
-            onClick={send}
-            disabled={sending || !draft.trim()}
-            className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white disabled:opacity-50"
-          >
-            Send
-          </button>
+          {!recording && (
+            <button
+              onClick={send}
+              disabled={sending || !draft.trim()}
+              className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white disabled:opacity-50"
+            >
+              Send
+            </button>
+          )}
         </div>
       )}
     </div>
