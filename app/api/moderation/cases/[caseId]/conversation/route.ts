@@ -34,6 +34,17 @@ async function getAuthedClientAndUser() {
  * path. Every access that returns data is logged to audit_logs below;
  * a query returning nothing (unauthorized, or genuinely empty) is not
  * logged, since nothing was actually accessed.
+ *
+ * Conversation resolution below tries every applicable strategy and
+ * merges the results, rather than an either/or chain — a report's
+ * relatedContentType may point at a conversation, a message, or (as the
+ * general "report this person" flow does) a connection, and regardless
+ * we also always check reportedUserId's own connections as a fallback.
+ * This was tightened after finding the connection-based report path
+ * had been silently mislabeled as relatedContentType "conversation"
+ * with a connection id, which meant a real report+case resolved to
+ * zero conversations. RLS itself was never at risk — this fixes the
+ * app-level lookup, not the authorization boundary.
  */
 export async function GET(
   request: NextRequest,
@@ -64,17 +75,31 @@ export async function GET(
     .eq("id", modCase.reportId)
     .single();
 
-  let conversationIds: string[] = [];
+  const conversationIdSet = new Set<string>();
+
   if (report?.relatedContentType === "conversation" && report.relatedContentId) {
-    conversationIds = [report.relatedContentId];
-  } else if (report?.relatedContentType === "message" && report.relatedContentId) {
+    conversationIdSet.add(report.relatedContentId);
+  }
+  if (report?.relatedContentType === "connection" && report.relatedContentId) {
+    const { data: conv } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("connectionId", report.relatedContentId)
+      .maybeSingle();
+    if (conv) conversationIdSet.add(conv.id);
+  }
+  if (report?.relatedContentType === "message" && report.relatedContentId) {
     const { data: msg } = await supabase
       .from("messages")
       .select("conversationId")
       .eq("id", report.relatedContentId)
       .maybeSingle();
-    if (msg) conversationIds = [msg.conversationId];
-  } else if (report?.reportedUserId) {
+    if (msg) conversationIdSet.add(msg.conversationId);
+  }
+  // Always also resolve via reportedUserId's own connections, regardless
+  // of relatedContentType — covers the general "report this person" case
+  // and any mislabeled/missing relatedContentType.
+  if (report?.reportedUserId) {
     const { data: conns } = await supabase
       .from("connections")
       .select("id")
@@ -84,10 +109,11 @@ export async function GET(
         .from("conversations")
         .select("id")
         .in("connectionId", conns.map((c: any) => c.id));
-      conversationIds = (convs ?? []).map((c: any) => c.id);
+      (convs ?? []).forEach((c: any) => conversationIdSet.add(c.id));
     }
   }
 
+  const conversationIds = Array.from(conversationIdSet);
   if (conversationIds.length === 0) {
     return NextResponse.json({ conversations: [] });
   }
@@ -127,9 +153,6 @@ export async function GET(
 
     results.push({ conversationId, messages });
 
-    // Mandatory audit record: who (actorUserId), why (reason), which
-    // conversation (targetId), when (createdAt default), related
-    // case/report, and the action taken.
     await supabase.from("audit_logs").insert({
       actorUserId: user.id,
       action: "MODERATION_CONVERSATION_ACCESSED",
