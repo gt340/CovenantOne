@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { encryptMessage, decryptMessage } from "@/lib/messageEncryption";
+import { scanText } from "@/lib/contentDetection";
 
 function getAdminClient() {
   return createClient(
@@ -133,7 +134,6 @@ export async function GET(
           createdAt: m.createdAt,
         };
       }
-      // TEXT (or SYSTEM, stored the same way)
       let content = "";
       try {
         const ciphertext = Buffer.from(m.ciphertext.replace(/^\\x/, ""), "hex");
@@ -224,6 +224,31 @@ export async function POST(
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Automated flagging — a pre-screening heuristic only, never an
+  // automatic judgment. Matches are recorded for human review and
+  // never block sending or notify anyone automatically. See
+  // src/lib/contentDetection.ts for exactly what this does and doesn't do.
+  try {
+    const matches = scanText(content);
+    if (matches.length > 0) {
+      const admin = getAdminClient();
+      await admin.from("content_flags").insert(
+        matches.map((m) => ({
+          contentType: "message",
+          contentId: created.id,
+          flaggedUserId: user.id,
+          category: m.category,
+          confidenceScore: m.confidence,
+          detectionSource: "KEYWORD_HEURISTIC_V1",
+          matchedTerms: m.matchedTerms,
+          status: "PENDING_REVIEW",
+        }))
+      );
+    }
+  } catch {
+    // Flagging is best-effort and must never block message delivery.
   }
 
   return NextResponse.json({
