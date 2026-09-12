@@ -384,7 +384,7 @@ function ReportModal({
   otherMemberName: string;
   onClose: () => void;
 }) {
-  const [category, setCategory] = useState<string>(REPORT_CATEGORIES[0].value);
+  const [category, setCategory] = useState(REPORT_CATEGORIES[0].value);
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -634,7 +634,7 @@ function MessagesTab({
                   <span className="italic opacity-70">Message deleted</span>
                 ) : m.type === "VOICE" ? (
                   m.audioUrl ? (
-                    <audio controls src={m.audioUrl} className="max-w-full" style={{ height: 32 }} />
+                    <VoiceMessagePlayer audioUrl={m.audioUrl} durationSeconds={m.durationSeconds ?? 0} isMine={m.isMine} />
                   ) : (
                     <span className="italic opacity-70">Voice message unavailable</span>
                   )
@@ -694,6 +694,85 @@ function MessagesTab({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function formatDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}:${rem.toString().padStart(2, "0")}`;
+}
+
+/**
+ * Custom player instead of native <audio controls>. Browser-recorded
+ * (MediaRecorder) webm blobs are well known to report a broken/zero
+ * duration to the native HTML5 audio element until the user seeks once —
+ * showing as a permanent "0:00 / 0:00". Since we already know the real
+ * duration from when it was recorded (stored server-side), we display
+ * that instead of trusting the browser's readout, and just track
+ * play/pause + elapsed time ourselves.
+ */
+function VoiceMessagePlayer({
+  audioUrl,
+  durationSeconds,
+  isMine,
+}: {
+  audioUrl: string | null | undefined;
+  durationSeconds: number;
+  isMine: boolean;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTime = () => setElapsed(audio.currentTime);
+    const onEnd = () => {
+      setPlaying(false);
+      setElapsed(0);
+    };
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("ended", onEnd);
+    return () => {
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("ended", onEnd);
+    };
+  }, []);
+
+  function toggle() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+      setPlaying(false);
+    } else {
+      audio.play().catch(() => {});
+      setPlaying(true);
+    }
+  }
+
+  if (!audioUrl) {
+    return <span className="italic opacity-70 text-sm">Voice message unavailable</span>;
+  }
+
+  return (
+    <div className="flex items-center gap-2 min-w-[140px]">
+      <audio ref={audioRef} src={audioUrl} preload="none" />
+      <button
+        onClick={toggle}
+        className={`w-7 h-7 flex-shrink-0 rounded-full flex items-center justify-center text-xs ${
+          isMine ? "bg-white/20" : "bg-gray-300"
+        }`}
+      >
+        {playing ? "❚❚" : "▶"}
+      </button>
+      <span className="text-xs tabular-nums">
+        {formatDuration(playing ? elapsed : 0)} / {formatDuration(durationSeconds)}
+      </span>
     </div>
   );
 }
