@@ -72,9 +72,24 @@ export async function POST(
     return NextResponse.json({ error: "Case not found" }, { status: 404 });
   }
 
-  // RLS (moderator_actions_insert_own) requires moderatorId = auth.uid()
-  // AND moderator tier — a MEMBER attempting this is rejected by the
-  // database itself. This insert stays on the caller's own session.
+  // A service-role client is used below for two specific writes that a
+  // SAFETY_MODERATOR's own session cannot make under current RLS:
+  //  1. `users` only has an UPDATE policy for admin-tier
+  //     (private.is_admin_tier() — ADMIN/SUPER_ADMIN), not
+  //     SAFETY_MODERATOR. The real authorization boundary for account
+  //     status changes is the enforce_status_transition_rules trigger,
+  //     which independently requires SAFETY_MODERATOR+ and fires no
+  //     matter which client performs the write — so this does not
+  //     weaken enforcement, it just reaches a write path RLS wasn't
+  //     configured to allow for this tier.
+  //  2. `notifications` only allows inserting a notification for
+  //     yourself (userId = auth.uid()) — a moderator can never create a
+  //     notification addressed to someone else under RLS, by design.
+  //     Since this route needs to notify the AFFECTED member (not the
+  //     moderator), that write also has to go through a privileged
+  //     client. Nothing else in this route touches this admin client.
+  const admin = getAdminClient();
+
   const { data: action, error } = await supabase
     .from("moderator_actions")
     .insert({ caseId, moderatorId: user.id, actionType: body.actionType, notes: body.notes?.trim() || null })
@@ -85,68 +100,54 @@ export async function POST(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Applying the actual account-status consequence needs a service-role
-  // client: `users` only has an UPDATE policy for admin-tier
-  // (private.is_admin_tier(), i.e. ADMIN/SUPER_ADMIN), not
-  // SAFETY_MODERATOR — so a safety moderator's own session would
-  // silently update zero rows here. The REAL authorization boundary for
-  // this is the enforce_status_transition_rules trigger, which
-  // independently requires SAFETY_MODERATOR tier or above and fires
-  // regardless of which client performs the write — so using a
-  // privileged client here does not weaken enforcement, it just reaches
-  // the write path RLS wasn't set up to allow for this tier.
+  const { data: report } = await supabase
+    .from("reports")
+    .select("reportedUserId")
+    .eq("id", modCase.reportId)
+    .single();
+  const affectedUserId: string | null = report?.reportedUserId ?? null;
+
   let statusChangeError: string | null = null;
-  let affectedUserId: string | null = null;
 
-  if (["ACCOUNT_SUSPENDED", "ACCOUNT_BANNED", "ACCOUNT_REINSTATED"].includes(body.actionType)) {
-    const { data: report } = await supabase
-      .from("reports")
-      .select("reportedUserId")
-      .eq("id", modCase.reportId)
-      .single();
-    affectedUserId = report?.reportedUserId ?? null;
+  if (["ACCOUNT_SUSPENDED", "ACCOUNT_BANNED", "ACCOUNT_REINSTATED"].includes(body.actionType) && affectedUserId) {
+    const update: Record<string, any> = {};
+    if (body.actionType === "ACCOUNT_SUSPENDED") {
+      const until = new Date();
+      until.setDate(until.getDate() + (body.suspensionDays ?? 7));
+      update.status = "SUSPENDED";
+      update.suspendedUntil = until.toISOString();
+    } else if (body.actionType === "ACCOUNT_BANNED") {
+      update.status = "BANNED";
+      update.suspendedUntil = null;
+    } else if (body.actionType === "ACCOUNT_REINSTATED") {
+      update.status = "ACTIVE";
+      update.suspendedUntil = null;
+    }
 
-    if (affectedUserId) {
-      const update: Record<string, any> = {};
-      if (body.actionType === "ACCOUNT_SUSPENDED") {
-        const until = new Date();
-        until.setDate(until.getDate() + (body.suspensionDays ?? 7));
-        update.status = "SUSPENDED";
-        update.suspendedUntil = until.toISOString();
-      } else if (body.actionType === "ACCOUNT_BANNED") {
-        update.status = "BANNED";
-        update.suspendedUntil = null;
-      } else if (body.actionType === "ACCOUNT_REINSTATED") {
-        update.status = "ACTIVE";
-        update.suspendedUntil = null;
-      }
+    const { data: updatedRows, error: userUpdateError } = await admin
+      .from("users")
+      .update(update)
+      .eq("id", affectedUserId)
+      .select("id");
 
-      const admin = getAdminClient();
-      const { data: updatedRows, error: userUpdateError } = await admin
-        .from("users")
-        .update(update)
-        .eq("id", affectedUserId)
-        .select("id");
-
-      if (userUpdateError) {
-        statusChangeError = userUpdateError.message;
-      } else if (!updatedRows || updatedRows.length === 0) {
-        // The trigger itself rejected it (caller wasn't actually
-        // SAFETY_MODERATOR tier+ at the DB level) — surface this
-        // rather than silently reporting success.
-        statusChangeError = "Status change was not applied — the enforce_status_transition_rules trigger rejected it.";
-      } else {
-        await supabase.from("notifications").insert({
-          userId: affectedUserId,
-          type: "MODERATION_UPDATE",
-          payload: {
-            actionType: body.actionType,
-            caseId,
-            notes: body.notes?.trim() || null,
-            suspendedUntil: update.suspendedUntil ?? null,
-          },
-        });
-      }
+    if (userUpdateError) {
+      statusChangeError = userUpdateError.message;
+    } else if (!updatedRows || updatedRows.length === 0) {
+      // The trigger itself rejected it (caller wasn't actually
+      // SAFETY_MODERATOR tier+ at the DB level) — surface this rather
+      // than silently reporting success.
+      statusChangeError = "Status change was not applied — the enforce_status_transition_rules trigger rejected it.";
+    } else {
+      await admin.from("notifications").insert({
+        userId: affectedUserId,
+        type: "MODERATION_UPDATE",
+        payload: {
+          actionType: body.actionType,
+          caseId,
+          notes: body.notes?.trim() || null,
+          suspendedUntil: update.suspendedUntil ?? null,
+        },
+      });
     }
   }
 
@@ -160,7 +161,7 @@ export async function POST(
   } else if (["WARNING_ISSUED", "CONTENT_REMOVED", "ACCOUNT_SUSPENDED", "ACCOUNT_BANNED", "ACCOUNT_REINSTATED"].includes(body.actionType)) {
     await supabase.from("moderation_cases").update({ status: "ACTION_TAKEN" }).eq("id", caseId);
     if (body.actionType === "WARNING_ISSUED" && affectedUserId) {
-      await supabase.from("notifications").insert({
+      await admin.from("notifications").insert({
         userId: affectedUserId,
         type: "MODERATION_UPDATE",
         payload: { actionType: body.actionType, caseId, notes: body.notes?.trim() || null },
