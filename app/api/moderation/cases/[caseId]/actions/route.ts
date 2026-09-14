@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
+
+function getAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
+}
 
 async function getAuthedClientAndUser() {
   const cookieStore = await cookies();
@@ -56,7 +65,7 @@ export async function POST(
 
   const { data: modCase, error: caseFetchError } = await supabase
     .from("moderation_cases")
-    .select("id, reportId")
+    .select("id, reportId, assignedModeratorId")
     .eq("id", caseId)
     .single();
   if (caseFetchError || !modCase) {
@@ -65,7 +74,7 @@ export async function POST(
 
   // RLS (moderator_actions_insert_own) requires moderatorId = auth.uid()
   // AND moderator tier — a MEMBER attempting this is rejected by the
-  // database itself.
+  // database itself. This insert stays on the caller's own session.
   const { data: action, error } = await supabase
     .from("moderator_actions")
     .insert({ caseId, moderatorId: user.id, actionType: body.actionType, notes: body.notes?.trim() || null })
@@ -76,12 +85,16 @@ export async function POST(
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Apply the actual account-status consequence, when this action type
-  // implies one. This is enforced by the enforce_status_transition_rules
-  // trigger too (requires SAFETY_MODERATOR tier), so this is defense in
-  // depth, not the only gate. A NOTIFICATION row is written for the
-  // affected member either way — see the workflow's "MEMBER NOTIFICATION"
-  // step — using the existing notifications table.
+  // Applying the actual account-status consequence needs a service-role
+  // client: `users` only has an UPDATE policy for admin-tier
+  // (private.is_admin_tier(), i.e. ADMIN/SUPER_ADMIN), not
+  // SAFETY_MODERATOR — so a safety moderator's own session would
+  // silently update zero rows here. The REAL authorization boundary for
+  // this is the enforce_status_transition_rules trigger, which
+  // independently requires SAFETY_MODERATOR tier or above and fires
+  // regardless of which client performs the write — so using a
+  // privileged client here does not weaken enforcement, it just reaches
+  // the write path RLS wasn't set up to allow for this tier.
   let statusChangeError: string | null = null;
   let affectedUserId: string | null = null;
 
@@ -108,9 +121,20 @@ export async function POST(
         update.suspendedUntil = null;
       }
 
-      const { error: userUpdateError } = await supabase.from("users").update(update).eq("id", affectedUserId);
+      const admin = getAdminClient();
+      const { data: updatedRows, error: userUpdateError } = await admin
+        .from("users")
+        .update(update)
+        .eq("id", affectedUserId)
+        .select("id");
+
       if (userUpdateError) {
         statusChangeError = userUpdateError.message;
+      } else if (!updatedRows || updatedRows.length === 0) {
+        // The trigger itself rejected it (caller wasn't actually
+        // SAFETY_MODERATOR tier+ at the DB level) — surface this
+        // rather than silently reporting success.
+        statusChangeError = "Status change was not applied — the enforce_status_transition_rules trigger rejected it.";
       } else {
         await supabase.from("notifications").insert({
           userId: affectedUserId,
