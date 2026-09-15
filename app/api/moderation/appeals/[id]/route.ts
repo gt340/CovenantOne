@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
+
+function getAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
+}
 
 async function getAuthedClientAndUser() {
   const cookieStore = await cookies();
@@ -45,9 +54,6 @@ export async function PATCH(
     .select("id, caseId, submittedByUserId, status")
     .eq("id", id)
     .single();
-  // RLS (appeals_select_moderator) means a non-moderator gets "not found"
-  // here rather than a distinct forbidden error — it's genuinely
-  // invisible to them, which is the correct behavior.
   if (fetchError || !appeal) {
     return NextResponse.json({ error: "Appeal not found" }, { status: 404 });
   }
@@ -70,35 +76,40 @@ export async function PATCH(
     return NextResponse.json({ error: updateError?.message ?? "Could not update appeal" }, { status: 500 });
   }
 
+  let reinstateWarning: string | null = null;
+
   if (body.decision === "GRANTED") {
-    // Reversing the action means reinstating the account, if it was
-    // suspended or banned as a result of this case.
-    const { data: modCase } = await supabase
-      .from("moderation_cases")
-      .select("id, reportId")
-      .eq("id", appeal.caseId)
-      .single();
-    if (modCase) {
-      const { error: reinstateError } = await supabase
-        .from("users")
-        .update({ status: "ACTIVE", suspendedUntil: null })
-        .eq("id", appeal.submittedByUserId);
-      if (!reinstateError) {
-        await supabase.from("moderator_actions").insert({
-          caseId: appeal.caseId,
-          moderatorId: user.id,
-          actionType: "ACCOUNT_REINSTATED",
-          notes: "Reinstated following a granted appeal.",
-        });
-        await supabase.from("notifications").insert({
-          userId: appeal.submittedByUserId,
-          type: "MODERATION_UPDATE",
-          payload: { appealId: id, decision: "GRANTED", reviewNotes: body.reviewNotes?.trim() || null },
-        });
-      }
+    // Same RLS gap as the case-actions route: `users` has no UPDATE
+    // policy for SAFETY_MODERATOR tier (only admin-tier), so this must
+    // go through a privileged client. The enforce_status_transition_rules
+    // trigger is the real gate here and applies regardless of client.
+    const admin = getAdminClient();
+    const { data: updatedRows, error: reinstateError } = await admin
+      .from("users")
+      .update({ status: "ACTIVE", suspendedUntil: null })
+      .eq("id", appeal.submittedByUserId)
+      .select("id");
+
+    if (reinstateError) {
+      reinstateWarning = reinstateError.message;
+    } else if (!updatedRows || updatedRows.length === 0) {
+      reinstateWarning = "Reinstatement was not applied — the enforce_status_transition_rules trigger rejected it.";
+    } else {
+      await supabase.from("moderator_actions").insert({
+        caseId: appeal.caseId,
+        moderatorId: user.id,
+        actionType: "ACCOUNT_REINSTATED",
+        notes: "Reinstated following a granted appeal.",
+      });
+      await admin.from("notifications").insert({
+        userId: appeal.submittedByUserId,
+        type: "MODERATION_UPDATE",
+        payload: { appealId: id, decision: "GRANTED", reviewNotes: body.reviewNotes?.trim() || null },
+      });
     }
   } else {
-    await supabase.from("notifications").insert({
+    const admin = getAdminClient();
+    await admin.from("notifications").insert({
       userId: appeal.submittedByUserId,
       type: "MODERATION_UPDATE",
       payload: { appealId: id, decision: "DENIED", reviewNotes: body.reviewNotes?.trim() || null },
@@ -116,8 +127,12 @@ export async function PATCH(
     action: "APPEAL_REVIEWED",
     targetType: "appeal",
     targetId: id,
-    metadata: { decision: body.decision, caseId: appeal.caseId, reviewNotes: body.reviewNotes?.trim() || null },
+    metadata: { decision: body.decision, caseId: appeal.caseId, reviewNotes: body.reviewNotes?.trim() || null, reinstateWarning },
   });
+
+  if (reinstateWarning) {
+    return NextResponse.json({ ...updatedAppeal, warning: "Appeal granted, but reinstating the account failed: " + reinstateWarning });
+  }
 
   return NextResponse.json(updatedAppeal);
 }
