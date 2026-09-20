@@ -103,10 +103,10 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
     }
   }
 
-  if (loading) return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
+  if (loading || currentUserId === null) return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
   if (!job) return <div className="max-w-2xl mx-auto px-4 py-8">Job not found.</div>;
 
-  const isPoster = !!currentUserId && job.posterId === currentUserId;
+  const isPoster = job.posterId === currentUserId;
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
