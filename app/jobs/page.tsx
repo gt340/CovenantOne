@@ -1,68 +1,111 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 
+type Category = { slug: string; label: string };
 type Job = {
   id: string;
-  posterId: string;
   title: string;
-  company: string | null;
-  description: string;
+  employerName: string;
   location: string | null;
   isRemote: boolean;
+  category: string | null;
   createdAt: string;
 };
 
 export default function JobsPage() {
+  const [categories, setCategories] = useState<Category[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [showPost, setShowPost] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const res = await fetch("/api/jobs", { credentials: "include" });
-    if (res.ok) setJobs((await res.json()).jobs ?? []);
-    setLoading(false);
+  const loadCategories = useCallback(async () => {
+    const res = await fetch("/api/job-categories", { credentials: "include" });
+    if (res.ok) setCategories((await res.json()).categories ?? []);
   }, []);
 
+  const loadJobs = useCallback(async () => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (activeCategory) params.set("category", activeCategory);
+    if (q.trim()) params.set("q", q.trim());
+    const res = await fetch(`/api/jobs?${params.toString()}`, { credentials: "include" });
+    if (res.ok) setJobs((await res.json()).jobs ?? []);
+    setLoading(false);
+  }, [activeCategory, q]);
+
   useEffect(() => {
-    load();
-  }, [load]);
+    loadCategories();
+  }, [loadCategories]);
+  useEffect(() => {
+    const t = setTimeout(loadJobs, 300); // debounce search
+    return () => clearTimeout(t);
+  }, [loadJobs]);
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-semibold mb-1">Jobs</h1>
-      <p className="text-sm text-gray-500 mb-6">Opportunities shared within the community.</p>
+      <p className="text-sm text-gray-500 mb-4">Opportunities shared within the community.</p>
+
+      <input
+        type="text"
+        placeholder="Search jobs..."
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        className="w-full border rounded-md px-3 py-2 text-sm mb-3"
+      />
+
+      <div className="flex gap-2 flex-wrap mb-4">
+        <button
+          onClick={() => setActiveCategory(null)}
+          className={`text-xs px-3 py-1.5 rounded-full border ${!activeCategory ? "bg-blue-600 text-white" : ""}`}
+        >
+          All
+        </button>
+        {categories.map((c) => (
+          <button
+            key={c.slug}
+            onClick={() => setActiveCategory(c.slug)}
+            className={`text-xs px-3 py-1.5 rounded-full border ${activeCategory === c.slug ? "bg-blue-600 text-white" : ""}`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
 
       <button onClick={() => setShowPost((s) => !s)} className="text-sm px-4 py-2 rounded-md bg-blue-600 text-white mb-6">
         {showPost ? "Cancel" : "+ Post a Job"}
       </button>
 
-      {showPost && <PostJobForm onPosted={() => { setShowPost(false); load(); }} />}
+      {showPost && <PostJobForm categories={categories} onPosted={() => { setShowPost(false); loadJobs(); }} />}
 
       {loading && <div className="text-center text-gray-400 py-12">Loading...</div>}
       <div className="space-y-2">
-        {!loading && jobs.length === 0 && <div className="text-sm text-gray-400 py-8 text-center">No jobs posted yet.</div>}
+        {!loading && jobs.length === 0 && <div className="text-sm text-gray-400 py-8 text-center">No jobs found.</div>}
         {jobs.map((j) => (
-          <div key={j.id} className="border rounded-md p-3">
+          <Link key={j.id} href={`/jobs/${j.id}`} className="block border rounded-md p-3 hover:bg-gray-50">
             <div className="text-sm font-medium">{j.title}</div>
-            <div className="text-xs text-gray-500 mb-1">
-              {j.company ?? "Independent"} · {j.isRemote ? "Remote" : j.location ?? "Location TBD"}
+            <div className="text-xs text-gray-500">
+              {j.employerName} · {j.isRemote ? "Remote" : j.location ?? "Location TBD"}
+              {j.category && ` · ${categories.find((c) => c.slug === j.category)?.label ?? j.category}`}
             </div>
-            <p className="text-xs text-gray-600">{j.description}</p>
-          </div>
+          </Link>
         ))}
       </div>
     </div>
   );
 }
 
-function PostJobForm({ onPosted }: { onPosted: () => void }) {
+function PostJobForm({ categories, onPosted }: { categories: Category[]; onPosted: () => void }) {
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
   const [description, setDescription] = useState("");
   const [location, setLocation] = useState("");
   const [isRemote, setIsRemote] = useState(false);
+  const [category, setCategory] = useState(categories[0]?.slug ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -84,6 +127,7 @@ function PostJobForm({ onPosted }: { onPosted: () => void }) {
           description: description.trim(),
           location: location.trim() || undefined,
           isRemote,
+          category: category || undefined,
         }),
       });
       if (!res.ok) {
@@ -100,6 +144,11 @@ function PostJobForm({ onPosted }: { onPosted: () => void }) {
 
   return (
     <div className="border rounded-md p-3 mb-6 space-y-2">
+      <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm">
+        {categories.map((c) => (
+          <option key={c.slug} value={c.slug}>{c.label}</option>
+        ))}
+      </select>
       <input type="text" placeholder="Job title" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm" />
       <input type="text" placeholder="Company (optional)" value={company} onChange={(e) => setCompany(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm" />
       <textarea placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} className="w-full border rounded-md px-3 py-2 text-sm" />
@@ -116,4 +165,4 @@ function PostJobForm({ onPosted }: { onPosted: () => void }) {
       </button>
     </div>
   );
-}
+                               }
