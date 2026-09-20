@@ -98,8 +98,12 @@ export default function AdminCommunityPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isRemoved: true }),
     });
-    if (res.ok) load();
-    else setError("Could not remove comment");
+    if (res.ok) {
+      load();
+    } else {
+      const b = await res.json().catch(() => null);
+      setError(`Could not remove comment: ${b?.error ?? res.status}`);
+    }
   }
 
   async function dismissReport(id: string) {
