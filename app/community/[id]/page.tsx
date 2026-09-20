@@ -65,17 +65,24 @@ export default function PostDetailPage({ params }: { params: { id: string } }) {
     if (res.ok) load();
   }
 
+  const [commentSaving, setCommentSaving] = useState(false);
+
   async function submitComment() {
-    if (!commentBody.trim()) return;
-    const res = await fetch(`/api/community/posts/${id}/comments`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body: commentBody.trim() }),
-    });
-    if (res.ok) {
-      setCommentBody("");
-      load();
+    if (!commentBody.trim() || commentSaving) return;
+    setCommentSaving(true);
+    try {
+      const res = await fetch(`/api/community/posts/${id}/comments`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: commentBody.trim() }),
+      });
+      if (res.ok) {
+        setCommentBody("");
+        await load();
+      }
+    } finally {
+      setCommentSaving(false);
     }
   }
 
