@@ -87,9 +87,13 @@ export default function AdminCommunityPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ [field]: value }),
     });
-    if (res.ok) load();
-    else setError("Could not update post");
-  }
+    if (res.ok) {
+      load();
+    } else {
+      const b = await res.json().catch(() => null);
+      setError(`Could not update post: ${b?.error ?? res.status}`);
+    }
+}
 
   async function removeCommentById(id: string) {
     const res = await fetch(`/api/community/comments/${id}`, {
