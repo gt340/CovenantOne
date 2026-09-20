@@ -42,7 +42,12 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
   }, [load]);
 
   useEffect(() => {
-    // If I'm the poster, load applicants.
+    fetch("/api/me", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setCurrentUserId(d?.id ?? null));
+  }, []);
+
+  useEffect(() => {
     if (job && currentUserId && job.posterId === currentUserId) {
       fetch(`/api/jobs/${id}/apply`, { credentials: "include" })
         .then((r) => (r.ok ? r.json() : { applications: [] }))
@@ -101,7 +106,7 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
   if (loading) return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
   if (!job) return <div className="max-w-2xl mx-auto px-4 py-8">Job not found.</div>;
 
-  const isPoster = applications !== null;
+  const isPoster = !!currentUserId && job.posterId === currentUserId;
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
