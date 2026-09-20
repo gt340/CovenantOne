@@ -19,25 +19,52 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const mine = searchParams.get("mine") === "true";
+  const category = searchParams.get("category");
+  const q = searchParams.get("q");
 
   let query = supabase
     .from("jobs")
-    .select("id, posterId, title, company, description, location, isRemote, isActive, createdAt")
+    .select("id, posterId, businessId, title, company, description, location, isRemote, category, isActive, isRemoved, createdAt")
     .order("createdAt", { ascending: false });
 
-  if (mine) query = query.eq("posterId", user.id);
-  else query = query.eq("isActive", true);
+  if (mine) {
+    query = query.eq("posterId", user.id);
+  } else {
+    query = query.eq("isActive", true).eq("isRemoved", false);
+  }
+  if (category) query = query.eq("category", category);
+  if (q) query = query.or(`title.ilike.%${q}%,description.ilike.%${q}%,company.ilike.%${q}%`);
 
-  const { data, error } = await query;
+  const { data: jobs, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ jobs: data ?? [] });
+
+  const businessIds = [...new Set((jobs ?? []).map((j: any) => j.businessId).filter(Boolean))];
+  const { data: businesses } = businessIds.length
+    ? await supabase.from("business_profiles").select("id, businessName").in("id", businessIds)
+    : { data: [] as any[] };
+  const businessById = new Map((businesses ?? []).map((b: any) => [b.id, b]));
+
+  return NextResponse.json({
+    jobs: (jobs ?? []).map((j: any) => ({
+      ...j,
+      employerName: businessById.get(j.businessId)?.businessName ?? j.company ?? "Independent",
+    })),
+  });
 }
 
 export async function POST(request: NextRequest) {
   const { supabase, user } = await getAuthedClientAndUser();
   if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
-  let body: { title?: string; company?: string; description?: string; location?: string; isRemote?: boolean };
+  let body: {
+    title?: string;
+    company?: string;
+    description?: string;
+    location?: string;
+    isRemote?: boolean;
+    category?: string;
+    businessId?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -56,10 +83,12 @@ export async function POST(request: NextRequest) {
       description: body.description.trim(),
       location: body.location?.trim() || null,
       isRemote: body.isRemote ?? false,
+      category: body.category || null,
+      businessId: body.businessId || null,
     })
     .select()
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   return NextResponse.json(data, { status: 201 });
-}
+    }
