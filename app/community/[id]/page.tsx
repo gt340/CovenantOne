@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, use as usePromise } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 
 type Post = {
@@ -32,8 +32,8 @@ const REACTIONS = [
 ];
 const REPORT_CATEGORIES = ["HARASSMENT", "INAPPROPRIATE_CONTENT", "SCAM_OR_FINANCIAL", "FRAUD", "OTHER"];
 
-export default function PostDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = usePromise(params);
+export default function PostDetailPage({ params }: { params: { id: string } }) {
+  const { id } = params;
   const [post, setPost] = useState<Post | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentBody, setCommentBody] = useState("");
