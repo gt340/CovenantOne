@@ -45,9 +45,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   });
 }
 
-// Edit own post (title/body) OR moderator action (isRemoved) OR admin action (isFeatured).
-// The DB trigger is the real enforcement boundary for who can touch isRemoved/isFeatured;
-// this route just passes through whatever fields were sent.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const { supabase, user } = await getAuthedClientAndUser();
@@ -81,4 +78,4 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
   return NextResponse.json(data);
-}
+    }
