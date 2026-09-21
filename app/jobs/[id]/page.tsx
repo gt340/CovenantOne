@@ -30,10 +30,7 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
   const load = useCallback(async () => {
     setLoading(true);
     const res = await fetch(`/api/jobs/${id}`, { credentials: "include" });
-    if (res.ok) {
-      const data = await res.json();
-      setJob(data);
-    }
+    if (res.ok) setJob(await res.json());
     setLoading(false);
   }, [id]);
 
@@ -54,19 +51,6 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
         .then((d) => setApplications(d.applications ?? []));
     }
   }, [job, currentUserId, id]);
-
-  // Cheap way to know "am I the poster" without a dedicated /me endpoint:
-  // try loading applicants; a 200 with data means RLS let us in as the poster.
-  useEffect(() => {
-    fetch(`/api/jobs/${id}/apply`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (d) {
-          setApplications(d.applications ?? []);
-          setCurrentUserId(job?.posterId ?? "self"); // any truthy match works for the render gate below
-        }
-      });
-  }, [id, job?.posterId]);
 
   async function apply() {
     setApplying(true);
@@ -175,4 +159,4 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
       )}
     </div>
   );
-}
+               }
