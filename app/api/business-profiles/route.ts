@@ -19,25 +19,40 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const mine = searchParams.get("mine") === "true";
+  const category = searchParams.get("category");
+  const partnershipOnly = searchParams.get("partnership") === "true";
 
   let query = supabase
     .from("business_profiles")
-    .select("id, ownerId, businessName, category, description, website, isPublic, createdAt");
+    .select("id, ownerId, businessName, categorySlug, description, website, isPublic, isRemoved, openToPartnership, partnershipNotes, createdAt");
 
-  if (mine) query = query.eq("ownerId", user.id);
-  else query = query.eq("isPublic", true);
+  if (mine) {
+    query = query.eq("ownerId", user.id);
+  } else {
+    query = query.eq("isPublic", true).eq("isRemoved", false);
+  }
+  if (category) query = query.eq("categorySlug", category);
+  if (partnershipOnly) query = query.eq("openToPartnership", true);
 
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ businesses: data ?? [] });
 }
 
-// One profile per user — upsert on ownerId (unique constraint already exists in the DB).
+// One profile per user — upsert on ownerId.
 export async function POST(request: NextRequest) {
   const { supabase, user } = await getAuthedClientAndUser();
   if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
-  let body: { businessName?: string; category?: string; description?: string; website?: string; isPublic?: boolean };
+  let body: {
+    businessName?: string;
+    categorySlug?: string;
+    description?: string;
+    website?: string;
+    isPublic?: boolean;
+    openToPartnership?: boolean;
+    partnershipNotes?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -53,10 +68,12 @@ export async function POST(request: NextRequest) {
       {
         ownerId: user.id,
         businessName: body.businessName.trim(),
-        category: body.category?.trim() || null,
+        categorySlug: body.categorySlug || null,
         description: body.description?.trim() || null,
         website: body.website?.trim() || null,
         isPublic: body.isPublic ?? true,
+        openToPartnership: body.openToPartnership ?? false,
+        partnershipNotes: body.partnershipNotes?.trim() || null,
       },
       { onConflict: "ownerId" }
     )
