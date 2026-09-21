@@ -12,6 +12,7 @@ type Business = {
   description: string | null;
   website: string | null;
   openToPartnership: boolean;
+  partnershipNotes?: string | null;
 };
 
 export default function BusinessPage() {
@@ -103,6 +104,7 @@ function BusinessForm({ categories, existing, onSaved }: { categories: Category[
   const [description, setDescription] = useState(existing?.description ?? "");
   const [website, setWebsite] = useState(existing?.website ?? "");
   const [openToPartnership, setOpenToPartnership] = useState(existing?.openToPartnership ?? false);
+  const [partnershipNotes, setPartnershipNotes] = useState(existing?.partnershipNotes ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,6 +126,7 @@ function BusinessForm({ categories, existing, onSaved }: { categories: Category[
           description: description.trim() || undefined,
           website: website.trim() || undefined,
           openToPartnership,
+          partnershipNotes: openToPartnership ? partnershipNotes.trim() || undefined : undefined,
         }),
       });
       if (!res.ok) {
@@ -152,10 +155,19 @@ function BusinessForm({ categories, existing, onSaved }: { categories: Category[
         <input type="checkbox" checked={openToPartnership} onChange={(e) => setOpenToPartnership(e.target.checked)} />
         Open to partnership opportunities
       </label>
+      {openToPartnership && (
+        <textarea
+          placeholder="What kind of partnership are you looking for?"
+          value={partnershipNotes}
+          onChange={(e) => setPartnershipNotes(e.target.value)}
+          rows={2}
+          className="w-full border rounded-md px-3 py-2 text-sm"
+        />
+      )}
       {error && <div className="text-red-600 text-xs">{error}</div>}
       <button onClick={submit} disabled={saving} className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white disabled:opacity-50">
         {saving ? "Saving..." : "Save Listing"}
       </button>
     </div>
   );
-            }
+                                 }
