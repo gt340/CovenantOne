@@ -20,7 +20,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   const { data: business, error } = await supabase
     .from("business_profiles")
-    .select("id, ownerId, businessName, categorySlug, description, website, isPublic, isRemoved, openToPartnership, partnershipNotes")
+    .select("id, ownerId, businessName, categorySlug, description, website, isPublic, isRemoved, openToPartnership, partnershipNotes, bannerImageKey")
     .eq("id", id)
     .single();
   if (error) return NextResponse.json({ error: "Business not found" }, { status: 404 });
@@ -47,6 +47,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     partnershipNotes?: string;
     isRemoved?: boolean;
     removedReason?: string;
+    bannerImageKey?: string | null;
   };
   try {
     body = await request.json();
@@ -60,6 +61,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (body.isPublic !== undefined) update.isPublic = body.isPublic;
   if (body.openToPartnership !== undefined) update.openToPartnership = body.openToPartnership;
   if (body.partnershipNotes !== undefined) update.partnershipNotes = body.partnershipNotes.trim();
+  if (body.bannerImageKey !== undefined) update.bannerImageKey = body.bannerImageKey;
   if (body.isRemoved !== undefined) {
     update.isRemoved = body.isRemoved;
     update.removedByUserId = body.isRemoved ? user.id : null;
