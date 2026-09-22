@@ -164,8 +164,7 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
           <div className="text-xs font-medium mb-2">{bannerUrl ? "Change" : "Add"} banner image</div>
           <input
             type="file"
-            accept="image/jpeg,image/png,image/webp"
-            capture="environment"
+            accept="image/jpeg,image/png,image/webp
             disabled={uploading}
             onChange={(e) => {
               const file = e.target.files?.[0];
