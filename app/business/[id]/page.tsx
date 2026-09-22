@@ -132,8 +132,12 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
     }
   }
 
-  if (loading || currentUserId === null) return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
-  if (!business) return <div className="max-w-2xl mx-auto px-4 py-8">Business not found.</div>;
+  if (loading || currentUserId === null) {
+    return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
+  }
+  if (!business) {
+    return <div className="max-w-2xl mx-auto px-4 py-8">Business not found.</div>;
+  }
 
   const isOwner = business.ownerId === currentUserId;
   const bannerUrl = publicImageUrl(business.bannerImageKey);
@@ -164,7 +168,7 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
           <div className="text-xs font-medium mb-2">{bannerUrl ? "Change" : "Add"} banner image</div>
           <input
             type="file"
-            accept="image/jpeg,image/png,image/webp
+            accept="image/jpeg,image/png,image/webp"
             disabled={uploading}
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -233,4 +237,4 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
       )}
     </div>
   );
-  }
+    }
