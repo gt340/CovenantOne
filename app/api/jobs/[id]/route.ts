@@ -20,7 +20,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   const { data: job, error } = await supabase
     .from("jobs")
-    .select("id, posterId, businessId, title, company, description, location, isRemote, category, isActive, isRemoved, createdAt")
+    .select("id, posterId, businessId, title, company, description, location, isRemote, category, isActive, isRemoved, bannerImageKey, createdAt")
     .eq("id", id)
     .single();
   if (error) return NextResponse.json({ error: "Job not found" }, { status: 404 });
@@ -57,6 +57,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     isActive?: boolean;
     isRemoved?: boolean;
     removedReason?: string;
+    bannerImageKey?: string | null;
   };
   try {
     body = await request.json();
@@ -68,6 +69,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (body.title !== undefined) update.title = body.title.trim();
   if (body.description !== undefined) update.description = body.description.trim();
   if (body.isActive !== undefined) update.isActive = body.isActive;
+  if (body.bannerImageKey !== undefined) update.bannerImageKey = body.bannerImageKey;
   if (body.isRemoved !== undefined) {
     update.isRemoved = body.isRemoved;
     update.removedByUserId = body.isRemoved ? user.id : null;
@@ -84,4 +86,4 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
   return NextResponse.json(data);
-  }
+    }
