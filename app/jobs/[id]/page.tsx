@@ -167,7 +167,6 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
           <input
             type="file"
             accept="image/jpeg,image/png,image/webp"
-            capture="environment"
             disabled={uploading}
             onChange={(e) => {
               const file = e.target.files?.[0];
