@@ -2,6 +2,15 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { createBrowserClient } from "@supabase/ssr";
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+function publicImageUrl(key: string | null) {
+  if (!key) return null;
+  return `${SUPABASE_URL}/storage/v1/object/public/listing-images/${key}`;
+}
 
 type Offering = { id: string; name: string; description: string | null };
 type BusinessDetail = {
@@ -12,6 +21,7 @@ type BusinessDetail = {
   website: string | null;
   openToPartnership: boolean;
   partnershipNotes: string | null;
+  bannerImageKey: string | null;
   offerings: Offering[];
 };
 
@@ -27,6 +37,8 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
   const [error, setError] = useState<string | null>(null);
   const [offeringName, setOfferingName] = useState("");
   const [offeringDesc, setOfferingDesc] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,14 +103,48 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
     if (res.ok) load();
   }
 
+  async function uploadBanner(file: File) {
+    if (!currentUserId) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const supabase = createBrowserClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      const ext = file.name.split(".").pop() || "jpg";
+      const path = `${currentUserId}/${id}-${Date.now()}.${ext}`;
+      const { error: uploadErr } = await supabase.storage.from("listing-images").upload(path, file, { upsert: true });
+      if (uploadErr) throw uploadErr;
+
+      const res = await fetch(`/api/business-profiles/${id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bannerImageKey: path }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => null);
+        throw new Error(b?.error ?? `Request failed (${res.status})`);
+      }
+      await load();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Could not upload image.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   if (loading || currentUserId === null) return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
   if (!business) return <div className="max-w-2xl mx-auto px-4 py-8">Business not found.</div>;
 
   const isOwner = business.ownerId === currentUserId;
+  const bannerUrl = publicImageUrl(business.bannerImageKey);
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
       <Link href="/business" className="text-sm text-blue-600 mb-3 inline-block">← Back to Directory</Link>
+
+      {bannerUrl && (
+        <img src={bannerUrl} alt={business.businessName} className="w-full h-40 object-cover rounded-md mb-3" />
+      )}
 
       <h1 className="text-xl font-semibold">{business.businessName}</h1>
       {business.description && <p className="text-sm text-gray-600 mb-2">{business.description}</p>}
@@ -110,6 +156,25 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
       {business.openToPartnership && (
         <div className="border border-amber-300 bg-amber-50 rounded-md p-2 text-xs text-amber-700 mb-4">
           Open to partnership opportunities{business.partnershipNotes ? `: ${business.partnershipNotes}` : ""}
+        </div>
+      )}
+
+      {isOwner && (
+        <div className="border rounded-md p-3 mb-4">
+          <div className="text-xs font-medium mb-2">{bannerUrl ? "Change" : "Add"} banner image</div>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            capture="environment"
+            disabled={uploading}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) uploadBanner(file);
+            }}
+            className="text-xs"
+          />
+          {uploading && <div className="text-xs text-gray-400 mt-1">Uploading...</div>}
+          {uploadError && <div className="text-red-600 text-xs mt-1">{uploadError}</div>}
         </div>
       )}
 
@@ -169,4 +234,4 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
       )}
     </div>
   );
-}
+  }
