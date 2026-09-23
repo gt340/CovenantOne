@@ -29,6 +29,7 @@ const ROLE_LABELS: Record<string, string> = {
   FAMILY_MENTOR: "Family Mentor",
   BUSINESS_MENTOR: "Business Mentor",
   FINANCIAL_MENTOR: "Financial Mentor",
+  CAREER_MENTOR: "Career Mentor",
 };
 
 type Tab = "directory" | "my-requests" | "mentor-dashboard";
