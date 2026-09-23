@@ -36,6 +36,7 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
@@ -53,7 +54,9 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
   useEffect(() => {
     fetch("/api/me", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setCurrentUserId(d?.id ?? null));
+      .then((d) => setCurrentUserId(d?.id ?? null))
+      .catch(() => setCurrentUserId(null))
+      .finally(() => setAuthChecked(true));
   }, []);
 
   useEffect(() => {
@@ -128,8 +131,12 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
     }
   }
 
-  if (loading || currentUserId === null) return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
-  if (!job) return <div className="max-w-2xl mx-auto px-4 py-8">Job not found.</div>;
+  if (loading || !authChecked) {
+    return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
+  }
+  if (!job) {
+    return <div className="max-w-2xl mx-auto px-4 py-8">Job not found.</div>;
+  }
 
   const isPoster = job.posterId === currentUserId;
   const bannerUrl = publicImageUrl(job.bannerImageKey);
@@ -223,4 +230,4 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
       )}
     </div>
   );
-    }
+                                                   }
