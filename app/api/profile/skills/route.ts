@@ -1,0 +1,54 @@
+import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
+
+async function getAuthedClientAndUser() {
+  const cookieStore = await cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { getAll() { return cookieStore.getAll(); }, setAll() {} } }
+  );
+  const { data: { user } } = await supabase.auth.getUser();
+  return { supabase, user };
+}
+
+export async function GET() {
+  const { supabase, user } = await getAuthedClientAndUser();
+  if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+  const { data, error } = await supabase
+    .from("member_profiles")
+    .select("skills, servicesOffered")
+    .eq("userId", user.id)
+    .maybeSingle();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({ skills: data?.skills ?? [], servicesOffered: data?.servicesOffered ?? [] });
+}
+
+export async function PATCH(request: NextRequest) {
+  const { supabase, user } = await getAuthedClientAndUser();
+  if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+  let body: { skills?: string[]; servicesOffered?: string[] };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const update: Record<string, unknown> = {};
+  if (body.skills !== undefined) update.skills = body.skills.map((s) => s.trim()).filter(Boolean);
+  if (body.servicesOffered !== undefined) update.servicesOffered = body.servicesOffered.map((s) => s.trim()).filter(Boolean);
+
+  const { data, error } = await supabase
+    .from("member_profiles")
+    .update(update)
+    .eq("userId", user.id)
+    .select("skills, servicesOffered")
+    .single();
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  return NextResponse.json(data);
+}
