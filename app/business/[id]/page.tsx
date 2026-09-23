@@ -29,6 +29,7 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
   const { id } = params;
   const [business, setBusiness] = useState<BusinessDetail | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sent, setSent] = useState(false);
   const [purpose, setPurpose] = useState("GENERAL");
@@ -54,7 +55,9 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
   useEffect(() => {
     fetch("/api/me", { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setCurrentUserId(d?.id ?? null));
+      .then((d) => setCurrentUserId(d?.id ?? null))
+      .catch(() => setCurrentUserId(null))
+      .finally(() => setAuthChecked(true));
   }, []);
 
   async function sendContact() {
@@ -132,7 +135,7 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
     }
   }
 
-  if (loading || currentUserId === null) {
+  if (loading || !authChecked) {
     return <div className="max-w-2xl mx-auto px-4 py-8 text-gray-400">Loading...</div>;
   }
   if (!business) {
@@ -237,4 +240,4 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
       )}
     </div>
   );
-    }
+                              }
