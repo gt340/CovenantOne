@@ -22,7 +22,7 @@ async function getAuthedClientAndUser() {
   return { supabase, user };
 }
 
-const MENTOR_ROLES = ["MARRIAGE_MENTOR", "FAMILY_MENTOR", "BUSINESS_MENTOR", "FINANCIAL_MENTOR"];
+const MENTOR_ROLES = ["MARRIAGE_MENTOR", "FAMILY_MENTOR", "BUSINESS_MENTOR", "FINANCIAL_MENTOR", "CAREER_MENTOR"];
 
 export async function GET(request: NextRequest) {
   const { supabase, user } = await getAuthedClientAndUser();
@@ -107,4 +107,4 @@ export async function POST(request: NextRequest) {
     { ...data, note: "Your mentor profile has been submitted and is pending admin approval." },
     { status: 201 }
   );
-}
+    }
