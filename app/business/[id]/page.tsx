@@ -114,7 +114,11 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
       const supabase = createBrowserClient(SUPABASE_URL, SUPABASE_ANON_KEY);
       const ext = file.name.split(".").pop() || "jpg";
       const path = `${currentUserId}/${id}-${Date.now()}.${ext}`;
-      const { error: uploadErr } = await supabase.storage.from("listing-images").upload(path, file, { upsert: true });
+      const uploadPromise = supabase.storage.from("listing-images").upload(path, file, { upsert: true });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Upload timed out — check your connection and try again")), 20000)
+      );
+      const { error: uploadErr } = (await Promise.race([uploadPromise, timeoutPromise])) as any;
       if (uploadErr) throw uploadErr;
 
       const res = await fetch(`/api/business-profiles/${id}`, {
@@ -240,4 +244,4 @@ export default function BusinessDetailPage({ params }: { params: { id: string } 
       )}
     </div>
   );
-                              }
+}
