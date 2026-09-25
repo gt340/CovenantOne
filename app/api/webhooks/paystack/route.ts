@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { verifyWebhookSignature } from "@/src/lib/paymentProvider";
+import { verifyWebhookSignature } from "@/lib/paymentProvider";
 
 // Paystack webhook endpoint. This is the ONLY place a donation may move from PENDING to
 // COMPLETED/FAILED — never a direct client request. Uses the service role key (server-to-server,
