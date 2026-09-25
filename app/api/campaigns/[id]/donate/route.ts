@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { isPaymentProviderConfigured, isTestMode, initializeTransaction } from "@/src/lib/paymentProvider";
+import { isPaymentProviderConfigured, isTestMode, initializeTransaction } from "@/lib/paymentProvider";
 
 async function getAuthedClientAndUser() {
   const cookieStore = await cookies();
