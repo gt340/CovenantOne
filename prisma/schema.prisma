@@ -253,6 +253,13 @@ enum FamilyMentorAccessScope {
   VIEW_STAGE_AND_SUMMARY
 }
 
+enum EventCategory {
+  WEDDING
+  ENGAGEMENT
+  BIRTHDAY
+  COMMUNITY
+}
+
 // -----------------------------------------------------------------------------
 // 1-2. USERS  (auth identity itself is Supabase Auth's job, not ours)
 // -----------------------------------------------------------------------------
@@ -314,6 +321,8 @@ model User {
   comments       Comment[]
   eventsHosted   Event[]              @relation("EventHost")
   eventRSVPs     EventAttendee[]
+  eventsCelebrated     Event[]         @relation("EventCelebrant")
+  eventInvitationsSent EventAttendee[] @relation("EventInviter")
   jobsPosted     Job[]
   businessProfile BusinessProfile?
   campaignsOrganized FundraisingCampaign[] @relation("CampaignOrganizer")
@@ -653,6 +662,7 @@ model Connection {
   conversation    Conversation?
   familyMentorInvitations FamilyMentorInvitation[]
   marriageJourney MarriageJourney?
+  familyEvents    Event[]
 
   @@unique([userAId, userBId])
   @@index([userBId])
@@ -956,26 +966,43 @@ model Comment {
 // -----------------------------------------------------------------------------
 // 35. EVENTS  (+ EventAttendee join table — needed for referential integrity;
 // see report at end of phase for why this was added)
+//
+// PHASE 12: events now carry an eventType. COMMUNITY events behave exactly as
+// before (broadly discoverable, self-serve RSVP). WEDDING/ENGAGEMENT events
+// are tied to a specific Connection and gated by a DB trigger to require that
+// connection be at the MARRIED / MARRIAGE_PREPARATION-or-later stage
+// respectively — this is the "celebrate approved marriages" rule enforced at
+// the data layer, not just in the UI. BIRTHDAY events name a celebrant.
+// WEDDING/ENGAGEMENT/BIRTHDAY events are visible only to their host, invited
+// guests (an event_attendees row), and admins — never publicly, per the
+// "don't expose sensitive family information without consent" requirement.
 // -----------------------------------------------------------------------------
 
 model Event {
-  id          String   @id @default(uuid())
+  id          String        @id @default(uuid())
   hostId      String
-  host        User     @relation("EventHost", fields: [hostId], references: [id])
+  host        User          @relation("EventHost", fields: [hostId], references: [id])
   title       String
   description String?
   location    String?
-  isVirtual   Boolean  @default(false)
+  isVirtual   Boolean       @default(false)
   startAt     DateTime
   endAt       DateTime
   capacity    Int?
-  isCancelled Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isCancelled Boolean       @default(false)
+  eventType   EventCategory @default(COMMUNITY)
+  connectionId String? // required by DB trigger when eventType is WEDDING/ENGAGEMENT
+  connection  Connection?   @relation(fields: [connectionId], references: [id])
+  celebrantUserId String? // required by DB trigger when eventType is BIRTHDAY
+  celebrant   User?         @relation("EventCelebrant", fields: [celebrantUserId], references: [id])
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   attendees EventAttendee[]
 
   @@index([startAt])
+  @@index([eventType])
+  @@index([connectionId])
   @@map("events")
 }
 
@@ -986,6 +1013,8 @@ model EventAttendee {
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   rsvpAt   DateTime @default(now())
   attended Boolean?
+  invitedByUserId String? // set when the host added this guest directly, vs. a self-RSVP
+  invitedBy       User?   @relation("EventInviter", fields: [invitedByUserId], references: [id])
 
   @@id([eventId, userId])
   @@map("event_attendees")
@@ -1095,6 +1124,11 @@ model FundDisbursement {
 /// have limited visibility into the relationship's stage as it becomes
 /// serious (product principle #10). Scope is deliberately restrictive —
 /// see FamilyMentorAccessScope; invitees never get message content access.
+///
+/// PHASE 12: a DB trigger (enforce_family_invite_stage) now blocks inserts
+/// while the connection is still at DISCOVERY/INTRODUCED/FRIENDSHIP/ENDED —
+/// this is the "when a relationship reaches an appropriate stage" gate from
+/// the Family Circle requirement, enforced at the data layer.
 model FamilyMentorInvitation {
   id              String                    @id @default(uuid())
   connectionId    String
@@ -1119,6 +1153,12 @@ model FamilyMentorInvitation {
 
 /// One per Connection that reaches MARRIAGE_PREPARATION or beyond. Tracks the
 /// structured checklist/milestones distinct from the free-flowing stage log.
+///
+/// PHASE 12: rows are created/updated automatically by a DB trigger
+/// (sync_marriage_journey) fired when a RelationshipStage row records
+/// MARRIAGE_PREPARATION or MARRIED — there is deliberately no participant
+/// INSERT grant; the journey reflects verified stage history rather than a
+/// freely-creatable record. Participants CAN update milestones once it exists.
 model MarriageJourney {
   id             String    @id @default(uuid())
   connectionId   String    @unique
