@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
+import { scanText } from "@/lib/contentSafetyHeuristic";
 
 async function getAuthedClientAndUser() {
   const cookieStore = await cookies();
@@ -11,6 +13,14 @@ async function getAuthedClientAndUser() {
   );
   const { data: { user } } = await supabase.auth.getUser();
   return { supabase, user };
+}
+
+function getAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -62,5 +72,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  // Best-effort AI safety flagging (Phase 14 §2/§5) — advisory only, see
+  // AI_ASSISTANCE_POLICY.md. Never blocks the comment or removes it.
+  try {
+    const hit = scanText(body.body);
+    if (hit) {
+      await getAdminClient().from("content_flags").insert({
+        contentType: "Comment",
+        contentId: data.id,
+        flaggedUserId: user.id,
+        category: hit.category,
+        confidenceScore: hit.confidenceScore,
+        matchedTerms: hit.matchedTerms,
+      });
+    }
+  } catch {
+    // Flagging is advisory — a failure here must never affect the response.
+  }
+
   return NextResponse.json(data, { status: 201 });
 }
