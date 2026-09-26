@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
+import { scanText } from "@/lib/contentSafetyHeuristic";
 
 async function getAuthedClientAndUser() {
   const cookieStore = await cookies();
@@ -11,6 +13,18 @@ async function getAuthedClientAndUser() {
   );
   const { data: { user } } = await supabase.auth.getUser();
   return { supabase, user };
+}
+
+// Service-role client, used only for the best-effort AI safety flag insert
+// below — content_flags has no participant INSERT policy on purpose (see
+// AI_ASSISTANCE_POLICY.md): only a server-side detector may write a flag,
+// never a user directly.
+function getAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
 }
 
 export async function GET(request: NextRequest) {
@@ -96,5 +110,24 @@ export async function POST(request: NextRequest) {
     // surface its message directly rather than a generic 500.
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
+
+  // Best-effort AI safety flagging (Phase 14 §2/§5) — never blocks the post,
+  // never removes it, only queues a suggestion for a human moderator.
+  try {
+    const hit = scanText(`${body.title} ${body.body}`);
+    if (hit) {
+      await getAdminClient().from("content_flags").insert({
+        contentType: "CommunityPost",
+        contentId: data.id,
+        flaggedUserId: user.id,
+        category: hit.category,
+        confidenceScore: hit.confidenceScore,
+        matchedTerms: hit.matchedTerms,
+      });
+    }
+  } catch {
+    // Flagging is advisory — a failure here must never affect the response.
+  }
+
   return NextResponse.json(data, { status: 201 });
 }
