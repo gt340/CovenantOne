@@ -13,6 +13,39 @@ async function getAuthedClientAndUser() {
   return { supabase, user };
 }
 
+// Event detail: description/date/time/location/host/guest list/RSVP status.
+// RLS scopes visibility automatically — COMMUNITY events are open to any
+// authenticated member, while WEDDING/ENGAGEMENT/BIRTHDAY events only
+// resolve for the host, an invited guest, or an admin (row just won't be
+// found for anyone else). The attendees array is similarly scoped by RLS:
+// the host sees the full guest list, a non-host only sees their own row.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const { supabase, user } = await getAuthedClientAndUser();
+  if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+  const { data: event, error } = await supabase
+    .from("events")
+    .select(
+      "id, hostId, title, description, location, isVirtual, startAt, endAt, capacity, isCancelled, eventType, connectionId, celebrantUserId"
+    )
+    .eq("id", id)
+    .maybeSingle();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!event) return NextResponse.json({ error: "Event not found, or you don't have access to it" }, { status: 404 });
+
+  const { data: attendees } = await supabase
+    .from("event_attendees")
+    .select("userId, rsvpAt, attended, invitedByUserId")
+    .eq("eventId", id);
+
+  return NextResponse.json({
+    event: { ...event, isHost: event.hostId === user.id },
+    attendees: attendees ?? [],
+    iAmGoing: (attendees ?? []).some((a: any) => a.userId === user.id),
+  });
+}
+
 // Edit own event, or admin action (e.g. cancel any event).
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

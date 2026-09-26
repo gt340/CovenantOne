@@ -42,6 +42,11 @@ export async function GET(
   return NextResponse.json({ invitations: data ?? [] });
 }
 
+// Family Circle: bring a trusted family member or mentor into the journey.
+// PHASE 12: a DB trigger now blocks this while the connection is still at
+// DISCOVERY/INTRODUCED/FRIENDSHIP/ENDED ("when a relationship reaches an
+// appropriate stage...") — we surface that as a friendly 400 instead of a
+// generic 500.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -88,6 +93,11 @@ export async function POST(
     .single();
 
   if (error) {
+    if ((error as any).code === "P0001") {
+      // Our DB trigger raised a plain exception — its message is already
+      // written to be shown directly to the member.
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
