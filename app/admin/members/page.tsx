@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 
 type Member = {
   id: string;
@@ -144,9 +145,9 @@ export default function CommunityVerificationAdminPage() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
-      <h1 className="text-2xl font-semibold mb-1">Community Verification</h1>
+      <h1 className="text-2xl font-semibold mb-1">Members</h1>
       <p className="text-sm text-gray-500 mb-6">
-        Grant or revoke the Community Verified badge. Every change is written to the audit log.
+        Search all members, open a full detail &amp; history view, and grant/revoke the Community Verified badge. Every change is written to the audit log.
       </p>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
@@ -210,7 +211,9 @@ export default function CommunityVerificationAdminPage() {
               members.map((m) => (
                 <tr key={m.id} className="border-t">
                   <td className="px-4 py-3">
-                    <div className="font-medium">{m.displayName}</div>
+                    <Link href={`/admin/members/${m.id}`} className="font-medium hover:underline">
+                      {m.displayName}
+                    </Link>
                     <div className="text-gray-400 text-xs">{m.email}</div>
                   </td>
                   <td className="px-4 py-3">
