@@ -8,6 +8,8 @@
     "build": "next build",
     "start": "next start",
     "test:auth": "tsx tests/permissions.test.ts && tsx tests/authorization.test.ts",
+    "test:ai-pastor:unit": "tsx tests/ai-pastor/unit.test.ts",
+    "test:ai-pastor:integration": "tsx tests/ai-pastor/integration.test.ts",
     "validate:schema": "python3 scripts/validate_schema_consistency.py",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
@@ -38,4 +40,3 @@
     "node": ">=20"
   }
 }
-
