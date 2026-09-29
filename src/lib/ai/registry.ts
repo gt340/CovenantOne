@@ -17,6 +17,7 @@ export type ProviderSettings = {
   textModel?: string | null;
   imageModel?: string | null;
   videoModel?: string | null;
+  textFallbackEnabled?: boolean | null;
 } | null;
 
 /** What each provider actually implements per kind. Anything absent is UNSUPPORTED — not faked. */
@@ -107,4 +108,29 @@ export function getVideoProvider(settings: ProviderSettings, fetchFn?: FetchFn):
 /** Providers an admin may pick for each kind (used to validate admin input). */
 export function supportedProviders(kind: Kind): string[] {
   return Object.keys(SUPPORT_MATRIX).filter((p) => (SUPPORT_MATRIX[p][kind]?.length ?? 0) > 0);
+}
+
+/**
+ * Text-provider failure fallback (Phase 17 §20). Only meaningful when the
+ * PRIMARY provider is READY but fails at call time (network error, 5xx,
+ * account issue) — a provider that was never configured has nothing to
+ * "fall back" from. Admin-disableable via textFallbackEnabled (default on).
+ * Returns null when there's no second configured text provider, or the
+ * fallback candidate IS the primary (nothing to fall back to).
+ */
+export function getFallbackTextProvider(settings: ProviderSettings, fetchFn?: FetchFn): { provider: TextProvider; name: string } | null {
+  if (settings?.textFallbackEnabled === false) return null;
+  const primary = resolveProvider("text", settings);
+  const candidates = supportedProviders("text").filter((p) => p !== primary.provider);
+  for (const name of candidates) {
+    const key = KEY_ENV[name];
+    if (!key || !clean(process.env[key])) continue;
+    const modelEnvName = MODEL_ENV[name]?.text;
+    const model = (modelEnvName && clean(process.env[modelEnvName])) ?? null;
+    if (!model) continue; // same "no invented default model" rule as resolveProvider
+    const apiKey = process.env[key]!.trim();
+    if (name === "openai") return { provider: new OpenAIProvider(apiKey, model, undefined, fetchFn), name };
+    if (name === "gemini") return { provider: new GeminiProvider(apiKey, model, undefined, fetchFn), name };
+  }
+  return null;
 }
