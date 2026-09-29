@@ -3,8 +3,9 @@
 import { useState, useEffect, useRef } from "react";
 
 type Citation = { rawText: string; verified: boolean };
-type Msg = { role: "USER" | "ASSISTANT"; content: string; citations?: Citation[]; safetyNote?: string | null };
-type Status = { bibleProvider: string; aiProvider: string };
+type MediaDecision = { shouldGenerateImage: boolean; shouldGenerateVideo: boolean; offerImage: boolean; reason: string };
+type Msg = { role: "USER" | "ASSISTANT"; content: string; citations?: Citation[]; safetyNote?: string | null; media?: MediaDecision | null; mediaResult?: { label: string; url: string | null; status: string } };
+type Status = { bibleProvider: string; aiTextProvider: string; imageProvider: string; videoProvider: string; mediaMode: string };
 type Plan = { id: string; studyType: string; title: string; status: string; steps: { title: string; completedAt: string | null }[] };
 type MemoryItem = { id: string; category: string; key: string; value: unknown };
 
@@ -50,11 +51,28 @@ export default function AIPastorPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
       setConversationId(data.conversationId);
-      setMessages((m) => [...m, { role: "ASSISTANT", content: data.response, citations: data.citations, safetyNote: data.safetyNote }]);
+      setMessages((m) => [...m, { role: "ASSISTANT", content: data.response, citations: data.citations, safetyNote: data.safetyNote, media: data.mediaDecision }]);
     } catch (err) {
       setMessages((m) => [...m, { role: "ASSISTANT", content: err instanceof Error ? err.message : "Something went wrong." }]);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function requestImage(index: number, subject: string) {
+    setMessages((m) => m.map((msg, i) => (i === index ? { ...msg, mediaResult: { label: "AI-generated illustration", url: null, status: "PROCESSING" } } : msg)));
+    try {
+      const res = await fetch("/api/ai-pastor/media", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "IMAGE", subject, conversationId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "Could not start image generation.");
+      setMessages((m) => m.map((msg, i) => (i === index ? { ...msg, mediaResult: { label: data.job.label, url: data.url ?? null, status: data.job.status } } : msg)));
+    } catch (err) {
+      setMessages((m) => m.map((msg, i) => (i === index ? { ...msg, mediaResult: { label: err instanceof Error ? err.message : "Failed", url: null, status: "FAILED" } } : msg)));
     }
   }
 
@@ -87,18 +105,18 @@ export default function AIPastorPage() {
     setMemory((m) => m.filter((x) => x.id !== id));
   }
 
-  const notConfigured = status && status.aiProvider === "NOT_CONFIGURED";
+  const notConfigured = status && status.aiTextProvider === "NOT_CONFIGURED";
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-6 flex flex-col min-h-screen">
       <h1 className="text-2xl font-semibold mb-1">AI Pastor</h1>
       <p className="text-xs text-gray-500 mb-4">
-        I&apos;m an AI system — not a human pastor, minister, therapist, lawyer, or doctor. I can help you explore Scripture, but I can&apos;t replace those people. Scripture appears as cited text; everything else is my own explanation.
+        I&apos;m an AI system — not a human pastor, minister, therapist, lawyer, or doctor. I can help you explore Scripture, but I can&apos;t replace those people. Scripture appears as cited text; any image or video is an AI-generated illustration, not history.
       </p>
 
       {notConfigured && (
         <div className="border border-amber-300 bg-amber-50 text-amber-800 text-sm rounded-md px-3 py-2 mb-4">
-          AI PROVIDER: NOT_CONFIGURED — the AI Pastor can&apos;t respond yet. An administrator needs to add credentials.
+          AI TEXT PROVIDER: NOT_CONFIGURED — the AI Pastor can&apos;t respond yet. An administrator needs to add credentials.
         </div>
       )}
       {status && status.bibleProvider === "NOT_CONFIGURED" && !notConfigured && (
@@ -131,6 +149,19 @@ export default function AIPastorPage() {
                         {c.rawText} {c.verified ? "✓ verified" : "⚠ could not be verified"}
                       </span>
                     ))}
+                  </div>
+                )}
+                {m.role === "ASSISTANT" && m.media?.offerImage && !m.mediaResult && (
+                  <button onClick={() => requestImage(i, m.content.slice(0, 300))} className="text-xs mt-1 px-2 py-1 border rounded-full text-gray-500 hover:bg-gray-50">
+                    + Generate an illustration for this
+                  </button>
+                )}
+                {m.mediaResult && (
+                  <div className="text-xs mt-1 border rounded-md p-2 inline-block">
+                    <div className="text-gray-400">{m.mediaResult.label}</div>
+                    {m.mediaResult.status === "PROCESSING" && <div className="text-gray-400">Generating...</div>}
+                    {m.mediaResult.status === "FAILED" && <div className="text-red-600">{m.mediaResult.label}</div>}
+                    {m.mediaResult.url && <img src={m.mediaResult.url} alt="AI-generated illustration" className="mt-1 max-w-xs rounded" />}
                   </div>
                 )}
               </div>
