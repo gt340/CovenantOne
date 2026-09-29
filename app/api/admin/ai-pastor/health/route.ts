@@ -2,15 +2,18 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { getBibleProvider, bibleProviderStatus } from "@/lib/bibleProvider";
-import { getAIProvider, aiProviderStatus } from "@/lib/aiProvider";
+import { getImageProvider, getTextProvider, getVideoProvider, resolveProvider } from "@/lib/ai/registry";
+import type { HealthResult } from "@/lib/ai/types";
 
 const ADMIN_ROLES = ["ADMIN", "SUPER_ADMIN"];
 
-// PRODUCTION HEALTH CHECK (Phase 16 §7) — distinct from unit and integration
-// tests: this runs live against the deployed environment's real
-// credentials, on demand, from the admin screen. Reports one of:
-// NOT_CONFIGURED (no credentials), CONNECTED, or ERROR (credentials
-// present but the provider call failed). Never returns the credential.
+// PRODUCTION HEALTH CHECK (Phase 16 amendment §15) — distinct from unit and
+// integration tests: runs live against the deployed environment's real
+// credentials, on demand. Each of Bible / text / image / video is reported
+// independently — a missing optional provider (image, video) never fails
+// the whole check, and a missing required one (text) is reported as
+// NOT_CONFIGURED, never masked as something else. No credential is ever
+// returned.
 export async function GET() {
   const cookieStore = await cookies();
   const supabase = createServerClient(
@@ -23,17 +26,42 @@ export async function GET() {
   const { data: profile } = await supabase.from("users").select("role").eq("id", user.id).single();
   if (!profile || !ADMIN_ROLES.includes(profile.role)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  const { data: settings } = await supabase.from("ai_pastor_settings").select("aiModel").eq("id", true).single();
+  const { data: settings } = await supabase.from("ai_pastor_settings").select("*").eq("id", true).single();
 
-  const bible =
-    bibleProviderStatus() === "NOT_CONFIGURED"
-      ? { status: "NOT_CONFIGURED" as const }
-      : await getBibleProvider()!.healthCheck().then((r) => ({ status: r.ok ? ("CONNECTED" as const) : ("ERROR" as const), detail: r.detail }));
+  async function check(configured: boolean, run: () => Promise<HealthResult>): Promise<HealthResult> {
+    if (!configured) return { state: "NOT_CONFIGURED" };
+    try {
+      return await run();
+    } catch (err) {
+      return { state: "ERROR", detail: err instanceof Error ? err.message : "Unknown error" };
+    }
+  }
 
-  const ai =
-    aiProviderStatus() === "NOT_CONFIGURED"
-      ? { status: "NOT_CONFIGURED" as const }
-      : await getAIProvider(settings?.aiModel)!.healthCheck().then((r) => ({ status: r.ok ? ("CONNECTED" as const) : ("ERROR" as const), detail: r.detail }));
+  const bible = await check(bibleProviderStatus() === "CONFIGURED", async () => {
+    const r = await getBibleProvider()!.healthCheck();
+    return { state: r.ok ? "READY" : "ERROR", detail: r.detail };
+  });
 
-  return NextResponse.json({ bible, ai, checkedAt: new Date().toISOString() });
+  const textResolved = resolveProvider("text", settings);
+  const text = await check(textResolved.state === "READY", () => getTextProvider(settings)!.healthCheck());
+
+  const imageResolved = resolveProvider("image", settings);
+  const image =
+    imageResolved.state === "UNSUPPORTED"
+      ? { state: "UNSUPPORTED" as const, detail: imageResolved.detail }
+      : await check(imageResolved.state === "READY", () => getImageProvider(settings)!.healthCheck());
+
+  const videoResolved = resolveProvider("video", settings);
+  const video =
+    videoResolved.state === "UNSUPPORTED"
+      ? { state: "UNSUPPORTED" as const, detail: videoResolved.detail }
+      : await check(videoResolved.state === "READY", () => getVideoProvider(settings)!.healthCheck());
+
+  return NextResponse.json({
+    bible: { ...bible, provider: "API_BIBLE" },
+    text: { ...text, provider: textResolved.provider, model: textResolved.model },
+    image: { ...image, provider: imageResolved.provider, model: imageResolved.model },
+    video: { ...video, provider: videoResolved.provider, model: videoResolved.model },
+    checkedAt: new Date().toISOString(),
+  });
 }
