@@ -54,7 +54,11 @@ export function extractCitations(responseText: string): ExtractedCitation[] {
   return found;
 }
 
-export type ValidatedCitation = ExtractedCitation & { verified: boolean };
+// translationId/copyright are display metadata ONLY (Phase 17 §24 — show
+// translation and preserve required attribution) — never a second copy of
+// the verse text; the text itself stays in the model's own prose response,
+// which is what avoids persisting/duplicating licensed Bible content here.
+export type ValidatedCitation = ExtractedCitation & { verified: boolean; translationId?: string; copyright?: string };
 
 /**
  * Confirms each extracted citation actually exists via the Bible provider.
@@ -74,7 +78,7 @@ export async function validateCitations(
       continue;
     }
     const verse = await provider.getVerse(c.passageId, translationId);
-    results.push({ ...c, verified: verse !== null });
+    results.push({ ...c, verified: verse !== null, translationId: verse ? translationId : undefined, copyright: verse?.copyright });
   }
   return results;
 }
