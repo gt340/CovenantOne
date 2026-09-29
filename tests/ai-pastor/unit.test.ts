@@ -12,7 +12,7 @@ import { scanForSafetyBoundary } from "../../src/lib/aiPastor/safetyBoundaries";
 import { buildAIPastorSystemPrompt } from "../../src/lib/aiPastor/systemPrompt";
 import { runAIPastorPipeline } from "../../src/lib/aiPastor/ragPipeline";
 import { bibleProviderStatus } from "../../src/lib/bibleProvider";
-import { describeAll, getImageProvider, getTextProvider, getVideoProvider, resolveProvider, supportedProviders } from "../../src/lib/ai/registry";
+import { describeAll, getFallbackTextProvider, getImageProvider, getTextProvider, getVideoProvider, resolveProvider, supportedProviders } from "../../src/lib/ai/registry";
 import { OpenAIImageProvider, OpenAIProvider } from "../../src/lib/ai/openai";
 import { GeminiImageProvider, GeminiProvider, GeminiVideoProvider } from "../../src/lib/ai/gemini";
 import { UnsupportedCapabilityError, assertSupports, redactSecrets, type TextProvider } from "../../src/lib/ai/types";
@@ -74,7 +74,7 @@ const mediaBase: MediaDecisionInput = {
 };
 
 async function main() {
-  console.log("UNIT TEST — AI Pastor (Phase 16 + amendment)");
+  console.log("UNIT TEST — AI Pastor (Phase 16 + amendment + Phase 17)");
 
   console.log("\n[regression] original Phase 16 tests");
 
@@ -231,6 +231,38 @@ async function main() {
     });
   });
 
+  console.log("\n[amendment] fallback provider resolution");
+
+  await test("fallback resolves to the OTHER configured+modeled provider, not the primary itself", async () => {
+    await withEnv({ OPENAI_API_KEY: "sk-test-1234567890", OPENAI_MODEL: "m1", GEMINI_API_KEY: "AIzaTestKey1234567890", GEMINI_MODEL: "g1" }, () => {
+      const fb = getFallbackTextProvider(null);
+      assert.equal(fb?.name, "gemini");
+    });
+    await withEnv({ TEXT_PROVIDER: "gemini", GEMINI_API_KEY: "AIzaTestKey1234567890", GEMINI_MODEL: "g1", OPENAI_API_KEY: "sk-test-1234567890", OPENAI_MODEL: "m1" }, () => {
+      const fb = getFallbackTextProvider(null);
+      assert.equal(fb?.name, "openai");
+    });
+  });
+
+  await test("no fallback candidate when only one provider is configured", async () => {
+    await withEnv({ OPENAI_API_KEY: "sk-test-1234567890", OPENAI_MODEL: "m1" }, () => {
+      assert.equal(getFallbackTextProvider(null), null);
+    });
+  });
+
+  await test("fallback candidate needs its own model configured too — a bare key is not enough", async () => {
+    await withEnv({ OPENAI_API_KEY: "sk-test-1234567890", OPENAI_MODEL: "m1", GEMINI_API_KEY: "AIzaTestKey1234567890" }, () => {
+      assert.equal(getFallbackTextProvider(null), null);
+    });
+  });
+
+  await test("admin can disable fallback via textFallbackEnabled=false", async () => {
+    await withEnv({ OPENAI_API_KEY: "sk-test-1234567890", OPENAI_MODEL: "m1", GEMINI_API_KEY: "AIzaTestKey1234567890", GEMINI_MODEL: "g1" }, () => {
+      assert.equal(getFallbackTextProvider({ textFallbackEnabled: false }), null);
+      assert.ok(getFallbackTextProvider({ textFallbackEnabled: true }));
+    });
+  });
+
   console.log("\n[amendment] provider behaviour (faked HTTP)");
 
   await test("OpenAI text: key only in Authorization header, parses reply + usage", async () => {
@@ -332,11 +364,49 @@ async function main() {
 
   console.log("\n[amendment] orchestrator is provider-independent; Scripture stays separate");
 
-  await test("switching text provider (openai <-> gemini) does not change orchestrator output", async () => {
+  await test("switching text provider (openai <-> gemini) does not change orchestrator logic, only providerUsed", async () => {
     const a = await runAIPastorPipeline(baseParams, { text: fakeText("openai", "Same answer."), bible: new MockBibleProvider() });
     const b = await runAIPastorPipeline(baseParams, { text: fakeText("gemini", "Same answer."), bible: new MockBibleProvider() });
-    assert.deepEqual(a, b);
+    assert.deepEqual({ ...a, providerUsed: null }, { ...b, providerUsed: null });
+    assert.equal(a.providerUsed, "openai");
+    assert.equal(b.providerUsed, "gemini");
+    assert.equal(a.usedFallback, false);
     assert.equal(a.aiSuccess, true);
+  });
+
+  await test("primary failure falls back to the secondary provider; response reports usedFallback + which provider answered", async () => {
+    const r = await runAIPastorPipeline(baseParams, {
+      text: fakeText("openai", new Error("openai down")),
+      fallback: fakeText("gemini", "Fallback answer."),
+      bible: new MockBibleProvider(),
+    });
+    assert.equal(r.aiSuccess, true);
+    assert.equal(r.text, "Fallback answer.");
+    assert.equal(r.providerUsed, "gemini");
+    assert.equal(r.usedFallback, true);
+  });
+
+  await test("no fallback configured: primary failure is reported as before, usedFallback false", async () => {
+    const r = await runAIPastorPipeline(baseParams, { text: fakeText("openai", new Error("boom")), bible: new MockBibleProvider() });
+    assert.equal(r.aiSuccess, false);
+    assert.equal(r.usedFallback, false);
+    assert.equal(r.providerUsed, null);
+  });
+
+  await test("primary AND fallback both fail: reported as failure, no secret leakage from either error", async () => {
+    const r = await runAIPastorPipeline(baseParams, {
+      text: fakeText("openai", new Error("boom sk-live-PRIMARYSECRET")),
+      fallback: fakeText("gemini", new Error("boom AIzaFALLBACKSECRETKEY123")),
+      bible: new MockBibleProvider(),
+    });
+    assert.equal(r.aiSuccess, false);
+    assert.equal(r.providerUsed, null);
+    assert.ok(!(r.errorCode ?? "").includes("FALLBACKSECRETKEY"));
+  });
+
+  await test("citations carry translationId + copyright for verified references, and translationId is always reported", async () => {
+    const r = await runAIPastorPipeline(baseParams, { text: fakeText("openai", "See MOCKBOOK 1:1 for wisdom."), bible: new MockBibleProvider() });
+    assert.equal(r.translationId, "MOCK_TRANSLATION");
   });
 
   await test("provider failure is handled: no throw, aiSuccess=false, error message contains no secret", async () => {
