@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
-import { bibleProviderStatus } from "@/lib/bibleProvider";
-import { aiProviderStatus } from "@/lib/aiProvider";
+import { describeAll, supportedProviders } from "@/lib/ai/registry";
+import { MEDIA_MODES } from "@/lib/aiPastor/mediaPolicy";
+import { DEFAULT_LIMITS, parseLimits } from "@/lib/aiPastor/rateLimit";
 
 const ADMIN_ROLES = ["ADMIN", "SUPER_ADMIN"];
 
@@ -23,15 +24,12 @@ async function requireAdmin() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: NextResponse.json({ error: "Not authenticated" }, { status: 401 }) };
   const { data: profile } = await supabase.from("users").select("role").eq("id", user.id).single();
-  if (!profile || !ADMIN_ROLES.includes(profile.role)) {
-    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
-  }
+  if (!profile || !ADMIN_ROLES.includes(profile.role)) return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   return { user };
 }
 
-// Returns configuration and NOT_CONFIGURED/CONFIGURED state only. Never
-// returns a secret value — the API keys live in env vars and are never read
-// back into any response (Phase 16 §5).
+// Returns provider/model/status/capabilities/mode — safe metadata only. No
+// key value is ever read back into a response (Phase 16 amendment §13/§19).
 export async function GET() {
   const auth = await requireAdmin();
   if ("error" in auth) return auth.error;
@@ -43,24 +41,28 @@ export async function GET() {
   ]);
 
   return NextResponse.json({
-    bibleProvider: { name: settings?.bibleProvider ?? "API_BIBLE", credentials: bibleProviderStatus() },
-    aiProvider: { name: settings?.aiProvider ?? "ANTHROPIC", credentials: aiProviderStatus() },
-    defaultTranslationId: settings?.bibleDefaultTranslationId ?? null,
-    aiModel: settings?.aiModel ?? null,
-    theologicalProfile: settings?.theologicalProfile ?? null,
+    providers: describeAll(settings),
+    supported: { text: supportedProviders("text"), image: supportedProviders("image"), video: supportedProviders("video") },
+    bibleDefaultTranslationId: settings?.bibleDefaultTranslationId ?? null,
     availableTranslations: translations ?? [],
+    mediaMode: settings?.mediaMode ?? "OFF",
+    mediaModes: MEDIA_MODES,
+    rateLimits: parseLimits(settings?.rateLimits),
+    defaultRateLimits: DEFAULT_LIMITS,
+    theologicalProfile: settings?.theologicalProfile ?? null,
   });
 }
 
-// PATCH { defaultTranslationId?, aiModel?, theologicalProfile? }. Core
-// safety rules are deliberately NOT configurable here — they live in code
-// (src/lib/aiPastor/systemPrompt.ts and safetyBoundaries.ts), so no admin
-// setting can weaken them (Phase 16 §13).
+// PATCH { textProvider?, imageProvider?, videoProvider?, textModel?, imageModel?,
+//         videoModel?, bibleDefaultTranslationId?, mediaMode?, rateLimits?, theologicalProfile? }
+// Core safety rules are NOT configurable here — they live in code
+// (systemPrompt.ts, safetyBoundaries.ts, mediaPolicy.ts's guardrail text),
+// so no admin setting can weaken them.
 export async function PATCH(request: NextRequest) {
   const auth = await requireAdmin();
   if ("error" in auth) return auth.error;
 
-  let body: { defaultTranslationId?: string; aiModel?: string; theologicalProfile?: unknown };
+  let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
@@ -70,15 +72,30 @@ export async function PATCH(request: NextRequest) {
   const admin = getAdminClient();
   const update: Record<string, unknown> = { updatedByUserId: auth.user.id, updatedAt: new Date().toISOString() };
 
-  if (body.defaultTranslationId !== undefined) {
-    // Only translations the provider actually returned may be selected — no invented IDs.
-    const { data: known } = await admin.from("bible_translations").select("id").eq("id", body.defaultTranslationId).maybeSingle();
-    if (!known) {
-      return NextResponse.json({ error: "Unknown translation. Sync the provider's translation list first, then pick from it." }, { status: 400 });
+  for (const [kind, col] of [["text", "textProvider"], ["image", "imageProvider"], ["video", "videoProvider"]] as const) {
+    if (typeof body[col] === "string") {
+      if (!supportedProviders(kind).includes((body[col] as string).toLowerCase())) {
+        return NextResponse.json({ error: `${body[col]} does not support ${kind} generation` }, { status: 400 });
+      }
+      update[col] = body[col];
     }
-    update.bibleDefaultTranslationId = body.defaultTranslationId;
   }
-  if (body.aiModel !== undefined) update.aiModel = body.aiModel;
+  for (const col of ["textModel", "imageModel", "videoModel"] as const) {
+    if (typeof body[col] === "string") update[col] = body[col];
+  }
+
+  if (typeof body.bibleDefaultTranslationId === "string") {
+    // Only translations the provider actually returned may be selected — no invented IDs.
+    const { data: known } = await admin.from("bible_translations").select("id").eq("id", body.bibleDefaultTranslationId).maybeSingle();
+    if (!known) return NextResponse.json({ error: "Unknown translation. Sync the provider's translation list first, then pick from it." }, { status: 400 });
+    update.bibleDefaultTranslationId = body.bibleDefaultTranslationId;
+  }
+
+  if (typeof body.mediaMode === "string") {
+    if (!MEDIA_MODES.includes(body.mediaMode as any)) return NextResponse.json({ error: `mediaMode must be one of ${MEDIA_MODES.join(", ")}` }, { status: 400 });
+    update.mediaMode = body.mediaMode;
+  }
+  if (body.rateLimits !== undefined) update.rateLimits = parseLimits(body.rateLimits); // clamped, never trusted raw
   if (body.theologicalProfile !== undefined) update.theologicalProfile = body.theologicalProfile;
 
   const { error } = await admin.from("ai_pastor_settings").update(update).eq("id", true);
