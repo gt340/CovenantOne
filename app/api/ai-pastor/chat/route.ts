@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { runAIPastorPipeline } from "@/lib/aiPastor/ragPipeline";
-import { describeAll, getTextProvider } from "@/lib/ai/registry";
+import { describeAll, getFallbackTextProvider, getTextProvider } from "@/lib/ai/registry";
 import { getBibleProvider } from "@/lib/bibleProvider";
 import { decideMedia, type MediaMode } from "@/lib/aiPastor/mediaPolicy";
 import { enforceRateLimit, parseLimits } from "@/lib/aiPastor/rateLimit";
@@ -29,7 +29,9 @@ function getAdminClient() {
 
 // POST { conversationId?, message } -> full pipeline. Order matters:
 //   auth -> validate -> RATE LIMIT (server-side, before any provider spend)
-//   -> ownership check -> pipeline -> persist -> media decision -> logging.
+//   -> ownership check -> pipeline (primary provider, falling back to the
+//   secondary text provider on failure, Phase 17 §20) -> persist -> media
+//   decision -> logging.
 // Text generation never waits on, or depends on, image/video: the media
 // decision is returned for the client to act on via /api/ai-pastor/media,
 // which enforces its own (stricter) limits.
@@ -89,6 +91,7 @@ export async function POST(request: NextRequest) {
     content: m.content,
   }));
 
+  const fallback = getFallbackTextProvider(settings);
   const result = await runAIPastorPipeline(
     {
       question: message,
@@ -96,7 +99,7 @@ export async function POST(request: NextRequest) {
       translationId: settings?.bibleDefaultTranslationId ?? null,
       theologicalProfile: settings?.theologicalProfile ?? null,
     },
-    { text: getTextProvider(settings), bible: getBibleProvider() }
+    { text: getTextProvider(settings), fallback: fallback?.provider ?? null, bible: getBibleProvider() }
   );
 
   await supabase.from("ai_pastor_messages").insert({ conversationId, role: "USER", content: message });
@@ -121,6 +124,8 @@ export async function POST(request: NextRequest) {
   });
 
   // Best-effort logging — never let logging failures affect the response.
+  // Records WHICH provider/model actually answered (incl. fallback use) for
+  // the admin observability screen — never any message content.
   try {
     await admin.from("ai_pastor_usage_logs").insert({
       userId: user.id,
@@ -129,6 +134,9 @@ export async function POST(request: NextRequest) {
       retrievalSuccess: result.retrievalSuccess,
       aiSuccess: result.aiSuccess,
       errorCode: result.errorCode ?? null,
+      provider: result.providerUsed,
+      model: settings?.textModel ?? null,
+      usedFallback: result.usedFallback,
     });
     if (result.safetyEvent.triggered) {
       await admin.from("ai_pastor_safety_events").insert({
@@ -151,6 +159,9 @@ export async function POST(request: NextRequest) {
     citations: result.citations,
     safetyNote: result.safetyEvent.triggered ? result.safetyEvent.note : null,
     configState: result.configState,
+    providerUsed: result.providerUsed,
+    usedFallback: result.usedFallback,
+    translationId: result.translationId,
     mediaDecision,
   });
 }
