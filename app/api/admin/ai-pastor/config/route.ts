@@ -50,11 +50,13 @@ export async function GET() {
     rateLimits: parseLimits(settings?.rateLimits),
     defaultRateLimits: DEFAULT_LIMITS,
     theologicalProfile: settings?.theologicalProfile ?? null,
+    textFallbackEnabled: settings?.textFallbackEnabled ?? true,
   });
 }
 
 // PATCH { textProvider?, imageProvider?, videoProvider?, textModel?, imageModel?,
-//         videoModel?, bibleDefaultTranslationId?, mediaMode?, rateLimits?, theologicalProfile? }
+//         videoModel?, bibleDefaultTranslationId?, mediaMode?, rateLimits?,
+//         theologicalProfile?, textFallbackEnabled? }
 // Core safety rules are NOT configurable here — they live in code
 // (systemPrompt.ts, safetyBoundaries.ts, mediaPolicy.ts's guardrail text),
 // so no admin setting can weaken them.
@@ -97,6 +99,7 @@ export async function PATCH(request: NextRequest) {
   }
   if (body.rateLimits !== undefined) update.rateLimits = parseLimits(body.rateLimits); // clamped, never trusted raw
   if (body.theologicalProfile !== undefined) update.theologicalProfile = body.theologicalProfile;
+  if (typeof body.textFallbackEnabled === "boolean") update.textFallbackEnabled = body.textFallbackEnabled;
 
   const { error } = await admin.from("ai_pastor_settings").update(update).eq("id", true);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
