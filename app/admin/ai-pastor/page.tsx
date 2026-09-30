@@ -11,9 +11,21 @@ type Config = {
   mediaMode: string;
   mediaModes: string[];
   rateLimits: Record<string, { perMinute: number; perDay: number; maxConcurrent?: number }>;
+  textFallbackEnabled: boolean;
 };
 type Health = { bible: HealthEntry; text: HealthEntry; image: HealthEntry; video: HealthEntry; checkedAt: string };
 type HealthEntry = { state: string; detail?: string; provider?: string; model?: string | null };
+type Usage = {
+  windowDays: number;
+  totalRequests: number;
+  successRate: number | null;
+  fallbackUsedCount: number;
+  avgLatencyMs: number | null;
+  byProvider: Record<string, number>;
+  byRequestType: Record<string, number>;
+  safety: { total: number; byType: Record<string, number>; recent: { eventType: string; createdAt: string }[] };
+  media: Record<string, number>;
+};
 
 const STATE_STYLE: Record<string, string> = {
   READY: "text-green-600",
@@ -27,6 +39,7 @@ const STATE_STYLE: Record<string, string> = {
 export default function AIPastorAdminPage() {
   const [config, setConfig] = useState<Config | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
+  const [usage, setUsage] = useState<Usage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [textModel, setTextModel] = useState("");
@@ -34,6 +47,7 @@ export default function AIPastorAdminPage() {
   const [videoModel, setVideoModel] = useState("");
   const [translationId, setTranslationId] = useState("");
   const [mediaMode, setMediaMode] = useState("OFF");
+  const [textFallbackEnabled, setTextFallbackEnabled] = useState(true);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/admin/ai-pastor/config", { credentials: "include" });
@@ -49,10 +63,12 @@ export default function AIPastorAdminPage() {
     setVideoModel(data.providers.video.model ?? "");
     setTranslationId(data.bibleDefaultTranslationId ?? "");
     setMediaMode(data.mediaMode);
+    setTextFallbackEnabled(data.textFallbackEnabled);
   }, []);
 
   useEffect(() => {
     load();
+    fetch("/api/admin/ai-pastor/usage", { credentials: "include" }).then(async (r) => r.ok && setUsage(await r.json()));
   }, [load]);
 
   async function runHealthCheck() {
@@ -77,7 +93,7 @@ export default function AIPastorAdminPage() {
   async function save() {
     setBusy(true);
     setError(null);
-    const body: Record<string, string> = { mediaMode };
+    const body: Record<string, unknown> = { mediaMode, textFallbackEnabled };
     if (textModel.trim()) body.textModel = textModel.trim();
     if (imageModel.trim()) body.imageModel = imageModel.trim();
     if (videoModel.trim()) body.videoModel = videoModel.trim();
@@ -126,6 +142,15 @@ export default function AIPastorAdminPage() {
           </Section>
 
           <ProviderSection title="Text provider (AI Pastor reasoning)" resolved={config.providers.text} health={health?.text} model={textModel} setModel={setTextModel} />
+
+          <Section title="Fallback (Phase 17 §20)">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={textFallbackEnabled} onChange={(e) => setTextFallbackEnabled(e.target.checked)} />
+              If the primary text provider fails, automatically try the other configured provider
+            </label>
+            <p className="text-xs text-gray-400 mt-1">Only helps when a second provider (OpenAI or Gemini) has both a key and a model set. Never used to bypass NOT_CONFIGURED.</p>
+          </Section>
+
           <ProviderSection title="Image provider" resolved={config.providers.image} health={health?.image} model={imageModel} setModel={setImageModel} />
           <ProviderSection title="Video provider" resolved={config.providers.video} health={health?.video} model={videoModel} setModel={setVideoModel} />
 
@@ -148,6 +173,42 @@ export default function AIPastorAdminPage() {
               <Row key={k} label={k} value={`${config.rateLimits[k]?.perMinute}/min · ${config.rateLimits[k]?.perDay}/day${config.rateLimits[k]?.maxConcurrent ? ` · ${config.rateLimits[k].maxConcurrent} concurrent` : ""}`} />
             ))}
           </Section>
+
+          {usage && (
+            <Section title={`Usage (last ${usage.windowDays} days)`}>
+              <Row label="Total requests" value={String(usage.totalRequests)} />
+              <Row label="Success rate" value={usage.successRate !== null ? `${usage.successRate}%` : "—"} />
+              <Row label="Used fallback provider" value={String(usage.fallbackUsedCount)} />
+              <Row label="Avg latency" value={usage.avgLatencyMs !== null ? `${usage.avgLatencyMs} ms` : "—"} />
+              {Object.keys(usage.byProvider).length > 0 && (
+                <div className="mt-2">
+                  <div className="text-xs text-gray-500 mb-1">By provider</div>
+                  {Object.entries(usage.byProvider).map(([p, n]) => (
+                    <Row key={p} label={p} value={String(n)} />
+                  ))}
+                </div>
+              )}
+              {Object.keys(usage.media).length > 0 && (
+                <div className="mt-2">
+                  <div className="text-xs text-gray-500 mb-1">Media jobs</div>
+                  {Object.entries(usage.media).map(([k, n]) => (
+                    <Row key={k} label={k} value={String(n)} />
+                  ))}
+                </div>
+              )}
+            </Section>
+          )}
+
+          {usage && (
+            <Section title="Safety events">
+              <Row label="Total (7d)" value={String(usage.safety.total)} />
+              {Object.entries(usage.safety.byType).map(([t, n]) => (
+                <Row key={t} label={t.replace(/_/g, " ")} value={String(n)} />
+              ))}
+              {usage.safety.total === 0 && <div className="text-xs text-gray-400">None in this window.</div>}
+              <p className="text-xs text-gray-400 mt-2">Type and timestamp only — no conversation content is shown here.</p>
+            </Section>
+          )}
 
           <div className="flex gap-2">
             <button onClick={save} disabled={busy} className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white disabled:opacity-50">
