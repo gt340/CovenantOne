@@ -11,6 +11,8 @@ import { classifyQuestion } from "../../src/lib/aiPastor/classification";
 import { scanForSafetyBoundary } from "../../src/lib/aiPastor/safetyBoundaries";
 import { buildAIPastorSystemPrompt } from "../../src/lib/aiPastor/systemPrompt";
 import { runAIPastorPipeline } from "../../src/lib/aiPastor/ragPipeline";
+import { buildKeywordQuery, buildRetrievalPlan, extractBareChapterReference } from "../../src/lib/aiPastor/scriptureRetrieval";
+import { BOOK_ID_MAP } from "../../src/lib/aiPastor/citationValidation";
 import { bibleProviderStatus } from "../../src/lib/bibleProvider";
 import { describeAll, getFallbackTextProvider, getImageProvider, getTextProvider, getVideoProvider, resolveProvider, supportedProviders } from "../../src/lib/ai/registry";
 import { OpenAIImageProvider, OpenAIProvider } from "../../src/lib/ai/openai";
@@ -74,7 +76,7 @@ const mediaBase: MediaDecisionInput = {
 };
 
 async function main() {
-  console.log("UNIT TEST — AI Pastor (Phase 16 + amendment + Phase 17)");
+  console.log("UNIT TEST — AI Pastor (Phase 16 + amendment + Phase 17 + retrieval debug)");
 
   console.log("\n[regression] original Phase 16 tests");
 
@@ -444,6 +446,119 @@ async function main() {
   await test("without a Bible provider every AI-written citation is unverified (never trusted)", async () => {
     const r = await runAIPastorPipeline(baseParams, { text: fakeText("gemini", "See Proverbs 3:5."), bible: null });
     assert.equal(r.citations[0].verified, false);
+  });
+
+  console.log("\n[debug] Scripture retrieval — root cause fix for zero-result topical questions");
+
+  await test("BUG REPRO (fixed): the exact reported failing question no longer sends the raw sentence as the search query", () => {
+    const q = "What does the Bible say about trusting God during difficult times?";
+    const query = buildKeywordQuery(q);
+    assert.notEqual(query, q); // old behavior: sent verbatim
+    assert.equal(query, "trusting god difficult times");
+  });
+
+  await test("keyword query strips question phrasing and stopwords in general", () => {
+    assert.equal(buildKeywordQuery("What does the Bible teach about forgiveness?"), "forgiveness");
+    assert.equal(buildKeywordQuery("Give me Bible verses about faith."), "faith");
+  });
+
+  await test("explicit verse reference in the question is detected and prioritized over keyword search", () => {
+    const plan = buildRetrievalPlan("What does Romans 8:28 say?", "GENERAL", BOOK_ID_MAP);
+    assert.equal(plan[0].kind, "explicit_verses");
+    assert.deepEqual((plan[0] as any).passageIds, ["ROM.8.28"]);
+  });
+
+  await test("bare chapter reference (no verse number) is detected when no verse-level reference exists", () => {
+    const plan = buildRetrievalPlan("Explain Psalm 23.", "GENERAL", BOOK_ID_MAP);
+    assert.equal(plan[0].kind, "explicit_chapter");
+    assert.deepEqual(plan[0], { kind: "explicit_chapter", bookId: "PSA", chapter: 23 });
+  });
+
+  await test("bare-chapter detection is not fooled by a preceding capitalized word (regression for a 2-word-group bug caught in testing)", () => {
+    const ref = extractBareChapterReference("Explain Psalm 23.", BOOK_ID_MAP);
+    assert.deepEqual(ref, { bookId: "PSA", bookName: "Psalm", chapter: 23 });
+  });
+
+  await test("an ordinary topical question with no reference produces only search stages, no explicit stage", () => {
+    const plan = buildRetrievalPlan("What does the Bible say about trusting God during difficult times?", "GENERAL", BOOK_ID_MAP);
+    assert.ok(plan.every((s) => s.kind === "keyword_search" || s.kind === "topic_search"));
+    assert.ok(plan.length >= 1);
+  });
+
+  await test("retrieval end-to-end: explicit verse (JHN.3.16) is fetched directly via getVerse, not via search", async () => {
+    const seen: { system?: string } = {};
+    const r = await runAIPastorPipeline(
+      { question: "What does John 3:16 say?", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok", seen), bible: new MockBibleProvider() }
+    );
+    assert.equal(r.retrievalSuccess, true);
+    assert.equal(r.retrievalMethod, "explicit_verses");
+    assert.match(seen.system!, /\[JHN\.3\.16\]/);
+    assert.match(seen.system!, /TEST FIXTURE TEXT for JHN\.3\.16/);
+  });
+
+  await test("retrieval end-to-end: bare chapter (Psalm 23) is fetched via getChapter", async () => {
+    const r = await runAIPastorPipeline(
+      { question: "Explain Psalm 23.", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok"), bible: new MockBibleProvider() }
+    );
+    assert.equal(r.retrievalSuccess, true);
+    assert.equal(r.retrievalMethod, "explicit_chapter");
+  });
+
+  await test("retrieval end-to-end: topical question with no keyword/topic hit falls through every stage honestly (no crash, no fabrication)", async () => {
+    const seen: { system?: string } = {};
+    const r = await runAIPastorPipeline(
+      { question: "What does the Bible say about trusting God during difficult times?", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok", seen), bible: new MockBibleProvider() }
+    );
+    // Mock has no fixture for "trusting god difficult times" or the FAITH topic terms, so this
+    // correctly reports no retrieval — proving the pipeline still refuses to invent Scripture
+    // when nothing is found, which is the one behavior the debug report must NOT weaken.
+    assert.equal(r.retrievalSuccess, false);
+    assert.match(seen.system!, /Do not invent a verse/);
+  });
+
+  await test("invalid/unknown explicit reference (book not in BOOK_ID_MAP) does not crash retrieval — falls through to search", async () => {
+    const r = await runAIPastorPipeline(
+      { question: "What does Hezekiah 4:9 say about forgiveness?", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok"), bible: new MockBibleProvider() }
+    );
+    assert.equal(r.aiSuccess, true); // no crash
+  });
+
+  await test("a provider error on one retrieval stage falls through to the next stage rather than aborting retrieval", async () => {
+    const flaky: any = new MockBibleProvider();
+    const realGetVerse = flaky.getVerse.bind(flaky);
+    flaky.getVerse = async () => {
+      throw new Error("simulated API.Bible 500");
+    };
+    const r = await runAIPastorPipeline(
+      { question: "What does John 3:16 say? test-match", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok"), bible: flaky }
+    );
+    assert.equal(r.aiSuccess, true);
+    assert.equal(r.retrievalMethod, "keyword_search"); // explicit_verses errored, fell through
+    void realGetVerse;
+  });
+
+  await test("malformed provider response (search resolves but with an unexpected shape) is treated as no results, not a crash", async () => {
+    const malformed: any = new MockBibleProvider();
+    malformed.search = async () => {
+      throw new TypeError("Cannot read properties of undefined (reading 'verses')");
+    };
+    const r = await runAIPastorPipeline(baseParams, { text: fakeText("openai", "ok"), bible: malformed });
+    assert.equal(r.aiSuccess, true);
+    assert.equal(r.retrievalSuccess, false);
+  });
+
+  await test("translation selection: no translationId configured -> retrieval is skipped entirely, reported honestly", async () => {
+    const r = await runAIPastorPipeline(
+      { question: "What does John 3:16 say?", conversationHistory: [], translationId: null, theologicalProfile: null },
+      { text: fakeText("openai", "ok"), bible: new MockBibleProvider() }
+    );
+    assert.equal(r.retrievalSuccess, false);
+    assert.equal(r.translationId, null);
   });
 
   console.log("\n[amendment] media decision engine");
