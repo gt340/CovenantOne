@@ -17,14 +17,10 @@ export type BibleVerse = {
   copyright?: string;
 };
 
-export type BibleChapter = {
-  reference: string;
-  bookName: string;
-  chapter: number;
-  verses: BibleVerse[];
-  translationId: string;
-  copyright?: string;
-};
+// `content` is the raw chapter text block API.Bible returns — used for
+// whole-chapter requests (e.g. "Explain Psalm 23") where per-verse parsing
+// isn't needed. `verses` stays for future per-verse chapter breakdown.
+export type BibleChapter = { reference: string; bookName: string; chapter: number; verses: BibleVerse[]; content?: string; translationId: string; copyright?: string };
 
 export type BibleSearchResult = {
   reference: string;
