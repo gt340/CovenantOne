@@ -12,7 +12,9 @@ import type { BibleProvider } from "../bibleProvider";
 // permissive on input; getBookId() below normalizes to API.Bible's book IDs.
 const REFERENCE_PATTERN = /\b((?:[1-3]\s?)?[A-Za-z]+)\s(\d+):(\d+)(?:-(\d+))?\b/g;
 
-const BOOK_ID_MAP: Record<string, string> = {
+// Exported so scriptureRetrieval.ts can reuse the same book-name matching
+// for explicit references found in the user's OWN question (Phase 17 debug).
+export const BOOK_ID_MAP: Record<string, string> = {
   genesis: "GEN", exodus: "EXO", leviticus: "LEV", numbers: "NUM", deuteronomy: "DEU",
   joshua: "JOS", judges: "JDG", ruth: "RUT", "1samuel": "1SA", "2samuel": "2SA",
   "1kings": "1KI", "2kings": "2KI", "1chronicles": "1CH", "2chronicles": "2CH",
