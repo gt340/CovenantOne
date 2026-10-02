@@ -121,7 +121,8 @@ export class ApiBibleProvider implements BibleProvider {
         reference: c.id,
         bookName: c.reference ?? bookId,
         chapter,
-        verses: [], // full per-verse breakdown not parsed in this v1 — content is available as one block via c.content if needed later
+        verses: [], // full per-verse breakdown not parsed — content below covers whole-chapter requests
+        content: c.content?.trim() || undefined,
         translationId,
         copyright: c.copyright,
       };
