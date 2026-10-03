@@ -76,7 +76,7 @@ const mediaBase: MediaDecisionInput = {
 };
 
 async function main() {
-  console.log("UNIT TEST — AI Pastor (Phase 16 + amendment + Phase 17 + retrieval debug)");
+  console.log("UNIT TEST — AI Pastor (Phase 16 + amendment + Phase 17 + retrieval debug + topic hardening)");
 
   console.log("\n[regression] original Phase 16 tests");
 
@@ -481,7 +481,7 @@ async function main() {
 
   await test("an ordinary topical question with no reference produces only search stages, no explicit stage", () => {
     const plan = buildRetrievalPlan("What does the Bible say about trusting God during difficult times?", "GENERAL", BOOK_ID_MAP);
-    assert.ok(plan.every((s) => s.kind === "keyword_search" || s.kind === "topic_search"));
+    assert.ok(plan.every((s) => s.kind === "multi_query_search"));
     assert.ok(plan.length >= 1);
   });
 
@@ -506,17 +506,56 @@ async function main() {
     assert.equal(r.retrievalMethod, "explicit_chapter");
   });
 
-  await test("retrieval end-to-end: topical question with no keyword/topic hit falls through every stage honestly (no crash, no fabrication)", async () => {
+  await test("HARDENING FIX: the originally-reported failing question now succeeds via concept queries, even though the raw keyword query alone still returns nothing", async () => {
     const seen: { system?: string } = {};
     const r = await runAIPastorPipeline(
       { question: "What does the Bible say about trusting God during difficult times?", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
       { text: fakeText("openai", "ok", seen), bible: new MockBibleProvider() }
     );
-    // Mock has no fixture for "trusting god difficult times" or the FAITH topic terms, so this
-    // correctly reports no retrieval — proving the pipeline still refuses to invent Scripture
-    // when nothing is found, which is the one behavior the debug report must NOT weaken.
+    assert.equal(r.retrievalSuccess, true);
+    assert.equal(r.retrievalMethod, "multi_query_search");
+    // proves it's the CONCEPT queries carrying this, not the raw keyword query
+    // (the mock returns [] for "trusting god difficult times" specifically):
+    assert.match(seen.system!, /RETRIEVED PASSAGES/);
+    assert.match(seen.system!, /FAITH\.\d/);
+  });
+
+  await test("genuinely no-match question (outside the taxonomy entirely) still falls through honestly — hardening did not weaken the no-fabrication guarantee", async () => {
+    const seen: { system?: string } = {};
+    const r = await runAIPastorPipeline(
+      { question: "What is the capital of a country with no scriptural keyword at all?", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok", seen), bible: new MockBibleProvider() }
+    );
     assert.equal(r.retrievalSuccess, false);
     assert.match(seen.system!, /Do not invent a verse/);
+  });
+
+  await test("multiple queries are actually generated for a topic question, bounded, not unbounded", () => {
+    const plan = buildRetrievalPlan("What does the Bible say about trusting God during difficult times?", "FAITH", BOOK_ID_MAP);
+    const stage = plan.find((s) => s.kind === "multi_query_search") as { kind: "multi_query_search"; queries: string[] };
+    assert.ok(stage.queries.length > 1, "should be more than just the raw keyword query");
+    assert.ok(stage.queries.length <= 6, "must stay bounded");
+    assert.ok(stage.queries.includes("faith"));
+    assert.ok(stage.queries.includes("trust in the Lord"));
+  });
+
+  await test("results from multiple queries are combined and duplicate passages (same reference, different query) are removed", async () => {
+    const r = await runAIPastorPipeline(
+      { question: "What does the Bible say about trusting God during difficult times?", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok"), bible: new MockBibleProvider() }
+    );
+    // Mock fixtures: "faith" -> FAITH.1, FAITH.2 ; "trust in the lord" -> FAITH.2 (dup), FAITH.3 ; "fear not" -> FAITH.4
+    // 4 unique passages should survive, not 5 — proves dedup actually ran, not just that retrieval succeeded.
+    assert.equal(r.retrievalPassageCount, 4);
+  });
+
+  await test("explicit verse retrieval still returns exactly the actual provider result, not a merged/padded set", async () => {
+    const r = await runAIPastorPipeline(
+      { question: "What does John 3:16 say?", conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+      { text: fakeText("openai", "ok"), bible: new MockBibleProvider() }
+    );
+    assert.equal(r.retrievalMethod, "explicit_verses");
+    assert.equal(r.retrievalPassageCount, 1);
   });
 
   await test("invalid/unknown explicit reference (book not in BOOK_ID_MAP) does not crash retrieval — falls through to search", async () => {
@@ -538,7 +577,7 @@ async function main() {
       { text: fakeText("openai", "ok"), bible: flaky }
     );
     assert.equal(r.aiSuccess, true);
-    assert.equal(r.retrievalMethod, "keyword_search"); // explicit_verses errored, fell through
+    assert.equal(r.retrievalMethod, "multi_query_search"); // explicit_verses errored, fell through
     void realGetVerse;
   });
 
@@ -560,6 +599,31 @@ async function main() {
     assert.equal(r.retrievalSuccess, false);
     assert.equal(r.translationId, null);
   });
+
+  console.log("\n[hardening] natural-language topic questions (Commander's 8 example phrasings)");
+
+  const naturalLanguageQuestions = [
+    "What does the Bible say about trusting God during difficult times?",
+    "How can I trust God when life is hard?",
+    "What does Scripture say when I am going through trials?",
+    "Bible verses for someone going through hardship.",
+    "What does the Bible say about fear and trusting God?",
+    "How can I keep my faith when I am suffering?",
+    "What does the Bible teach about hope during difficult circumstances?",
+    "What does God say about anxiety and fear?",
+  ];
+
+  for (const q of naturalLanguageQuestions) {
+    await test(`natural-language question classifies FAITH and retrieves real Scripture, not a fabrication: "${q}"`, async () => {
+      const r = await runAIPastorPipeline(
+        { question: q, conversationHistory: [], translationId: "MOCK_TRANSLATION", theologicalProfile: null },
+        { text: fakeText("openai", "ok"), bible: new MockBibleProvider() }
+      );
+      assert.equal(classifyQuestion(q), "FAITH");
+      assert.equal(r.retrievalSuccess, true);
+      assert.equal(r.aiSuccess, true);
+    });
+  }
 
   console.log("\n[amendment] media decision engine");
 
