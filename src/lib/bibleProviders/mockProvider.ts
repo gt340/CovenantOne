@@ -5,10 +5,14 @@ import type { BibleProvider, BibleVerse, BibleChapter, BibleSearchResult, BibleT
  * tests) — only by files under /tests. Returns clearly-labeled fake data so
  * it can never be mistaken for real Scripture if it somehow leaked into a
  * response (Phase 16 §1: "Do not present mock Scripture as production
- * Scripture"). Recognizes a couple of REAL canonical references (JHN.3.16,
- * PSA.23) in addition to its own MOCKBOOK fixture, so the explicit-reference
- * retrieval stages (scriptureRetrieval.ts) — which only fire on real book
- * names — can be exercised in unit tests without a live API.Bible call.
+ * Scripture").
+ *
+ * search() simulates API.Bible's lexical behavior deliberately: the raw
+ * keyword query from a natural-language question ("trusting god difficult
+ * times") returns NOTHING, same as the real API did in production — only
+ * the curated concept queries ("faith", "trust in the lord", "fear not")
+ * return results, with an intentional overlap between two of them so the
+ * pipeline's deduplication is actually exercised, not just assumed.
  */
 export class MockBibleProvider implements BibleProvider {
   readonly name = "MOCK_TEST_ONLY";
@@ -58,10 +62,26 @@ export class MockBibleProvider implements BibleProvider {
   }
 
   async search(query: string, translationId: string): Promise<BibleSearchResult[]> {
-    const q = query.toLowerCase();
-    if (q.includes("test") && q.includes("match")) {
-      return [{ reference: "MOCKBOOK.1.1", bookName: "[TEST FIXTURE BOOK]", chapter: 1, verse: 1, snippet: "[TEST FIXTURE SNIPPET]", translationId }];
-    }
+    const q = query.toLowerCase().trim();
+    const fixture = (reference: string, snippet: string): BibleSearchResult => ({
+      reference, bookName: "[TEST FIXTURE BOOK]", chapter: 0, verse: 0, snippet: `[TEST FIXTURE] ${snippet}`, translationId,
+    });
+
+    if (q.includes("test") && q.includes("match")) return [fixture("MOCKBOOK.1.1", "legacy test-match fixture")];
+
+    // FAITH topic concepts — FAITH.2 appears under two different queries on
+    // purpose, to exercise cross-query deduplication.
+    if (q === "faith") return [fixture("FAITH.1", "faith snippet 1"), fixture("FAITH.2", "faith snippet 2")];
+    if (q === "trust in the lord") return [fixture("FAITH.2", "faith snippet 2 (duplicate)"), fixture("FAITH.3", "faith snippet 3")];
+    if (q === "fear not") return [fixture("FAITH.4", "faith snippet 4")];
+
+    // FORGIVENESS topic concepts
+    if (q === "forgive" || q === "forgiveness") return [fixture("FORGIVE.1", "forgiveness snippet")];
+
+    // Everything else — including the raw keyword-extracted query from a
+    // natural-language question, and the unused "hope"/"reconcile" concepts
+    // — returns nothing, same as real API.Bible's lexical search did for
+    // the originally-reported failing question.
     return [];
   }
 }
