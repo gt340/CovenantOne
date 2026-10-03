@@ -1,22 +1,24 @@
-// Scripture retrieval strategy (Phase 17 debug). This is the fix for the
-// reported bug: natural-language topical questions were being sent to
-// API.Bible's keyword search VERBATIM ("What does the Bible say about
-// trusting God during difficult times?"), which matches no verse text and
-// returns zero results. Explicit references ("Romans 8:28") were also never
-// detected in the user's own question — only validated after the model
-// generated its answer.
+// Scripture retrieval strategy (Phase 17 debug + topic-retrieval hardening).
 //
-// API.Bible remains the sole Scripture source throughout. This module only
-// decides WHAT to ask it and in what order; it never invents verse content.
+// First fix (debug pass): natural-language questions were sent to API.Bible
+// VERBATIM as one search query, which almost never matches real verse text.
+// Fixed by stripping question-phrasing/stopwords into one keyword query.
+//
+// Second fix (this pass): a single keyword query is still too narrow —
+// API.Bible's search is lexical, so "trusting god difficult times" as one
+// query misses verses that use different words for the same idea. This
+// file now runs a BOUNDED set of queries (the keyword query plus a few
+// curated concept phrases for the classified topic — see
+// classification.ts's TOPIC_SEARCH_CONCEPTS, the existing taxonomy,
+// extended rather than duplicated) and merges/deduplicates whatever
+// API.Bible actually returns. It never generates an unbounded number of
+// queries and never invents a verse to fill a gap.
+//
+// API.Bible remains the sole Scripture source throughout.
 
 import { extractCitations } from "./citationValidation";
-import { TOPIC_SEARCH_TERMS, type PastoralTopic } from "./classification";
+import { TOPIC_SEARCH_CONCEPTS, type PastoralTopic } from "./classification";
 
-// Strips question phrasing and generic stopwords so a natural-language
-// question becomes a real keyword query instead of a sentence. Deliberately
-// NOT an AI call (deterministic, auditable, zero extra latency/cost) — the
-// Commander's instruction permits an AI-assisted version later if this
-// proves insufficient, but this is the minimal fix for the reported bug.
 const STOPWORDS = new Set([
   "a","about","an","and","are","as","at","be","by","can","could","did","do","does","during","for","from",
   "give","gives","has","have","how","i","in","is","it","its","me","my","of","on","please",
@@ -51,18 +53,21 @@ export function extractBareChapterReference(question: string, bookIdMap: Record<
   return null;
 }
 
-/**
- * Builds the ordered list of retrieval attempts for a question. Each stage
- * only runs if the previous one yielded nothing — this is the "two-stage
- * (or more) approach" the debug task asked for, made explicit and testable
- * rather than buried in one search() call.
- */
+/** Hard ceiling on how many API.Bible queries one retrieval can issue — bounded by design, never "generate until something works." */
+export const MAX_SEARCH_QUERIES = 6;
+
 export type RetrievalPlan =
   | { kind: "explicit_verses"; passageIds: string[] }
   | { kind: "explicit_chapter"; bookId: string; chapter: number }
-  | { kind: "keyword_search"; query: string }
-  | { kind: "topic_search"; query: string };
+  | { kind: "multi_query_search"; queries: string[] };
 
+/**
+ * Builds the retrieval plan for a question: explicit reference stages first
+ * (most authoritative — the member named an exact passage), then, if none
+ * matched, a single multi_query_search stage carrying every query worth
+ * trying — the keyword-extracted query plus the matched topic's curated
+ * concepts, deduplicated and capped at MAX_SEARCH_QUERIES.
+ */
 export function buildRetrievalPlan(question: string, topic: PastoralTopic, bookIdMap: Record<string, string>): RetrievalPlan[] {
   const plan: RetrievalPlan[] = [];
 
@@ -76,11 +81,14 @@ export function buildRetrievalPlan(question: string, topic: PastoralTopic, bookI
     if (chapterRef) plan.push({ kind: "explicit_chapter", bookId: chapterRef.bookId, chapter: chapterRef.chapter });
   }
 
+  const queries: string[] = [];
   const keywordQuery = buildKeywordQuery(question);
-  if (keywordQuery) plan.push({ kind: "keyword_search", query: keywordQuery });
-
-  const topicTerms = TOPIC_SEARCH_TERMS[topic];
-  if (topicTerms && topicTerms !== keywordQuery) plan.push({ kind: "topic_search", query: topicTerms });
+  if (keywordQuery) queries.push(keywordQuery);
+  for (const concept of TOPIC_SEARCH_CONCEPTS[topic] ?? []) {
+    if (queries.length >= MAX_SEARCH_QUERIES) break;
+    if (!queries.includes(concept)) queries.push(concept);
+  }
+  if (queries.length > 0) plan.push({ kind: "multi_query_search", queries: queries.slice(0, MAX_SEARCH_QUERIES) });
 
   return plan;
 }
