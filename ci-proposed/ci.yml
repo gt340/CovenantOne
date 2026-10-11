@@ -1,0 +1,204 @@
+name: CI
+
+# Required checks run with NO production access and NO secrets: unit tests use
+# in-process fakes, database tests use a throwaway Postgres service container,
+# and the route test runs the built app with placeholder env vars.
+# This workflow never deploys. The live-provider integration job runs only when
+# started manually (workflow_dispatch) and reads credentials from GitHub secrets.
+#
+# INSTALL: this file is stored at ci-proposed/ci.yml because the automation that
+# wrote it cannot create files under .github/workflows. Move it to
+# .github/workflows/ci.yml (GitHub web editor: open file -> pencil -> change the
+# path in the filename box -> commit to this branch).
+
+on:
+  pull_request:
+  push:
+    branches: [main, "phase18-**"]
+  workflow_dispatch:
+    inputs:
+      run_live_integration:
+        description: "Also run live-provider integration tests (uses repository secrets, may cost money)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Generate Prisma client (types only, no database connection)
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+          DIRECT_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+      - name: tsc --noEmit
+        run: set -o pipefail; npm run typecheck 2>&1 | tee typecheck.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: typecheck-log
+          path: typecheck.log
+          if-no-files-found: ignore
+
+  unit-tests:
+    name: Unit + Phase 17 regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Full Phase 17 regression + Phase 18 ingestion/retrieval/prompt-injection/
+      # provenance unit tests (network-free; providers are faked in-process).
+      - name: AI Pastor unit suite (Phase 16/17 regression + Phase 18 knowledge)
+        run: set -o pipefail; npm run test:ai-pastor:unit 2>&1 | tee ai-pastor-unit.log
+      - name: Knowledge approval governance (two-person rule, licence gate, audit metadata)
+        run: set -o pipefail; npm run test:knowledge:governance 2>&1 | tee knowledge-governance.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-logs
+          path: "*.log"
+          if-no-files-found: ignore
+
+  legacy-auth-tests:
+    name: Phase 1/2 authorization tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: set -o pipefail; npm run test:auth 2>&1 | tee legacy-auth.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: legacy-auth-log
+          path: legacy-auth.log
+          if-no-files-found: ignore
+
+  database-tests:
+    name: Database tests (lifecycle, approval, retrieval, RLS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable container, reachable only from this job. Not a secret.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure psql client
+        run: command -v psql >/dev/null || (sudo apt-get update && sudo apt-get install -y postgresql-client)
+      - name: Apply fixture + real migration, run tests
+        run: set -o pipefail; bash tests/db/run.sh 2>&1 | tee database-tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: database-test-log
+          path: database-tests.log
+          if-no-files-found: ignore
+
+  build-and-route-auth:
+    name: Build + admin route authorization
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Placeholders only: nothing here can reach a real Supabase project.
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.invalid
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+      SUPABASE_SERVICE_ROLE_KEY: placeholder-service-role-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+          DIRECT_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+      - name: next build
+        run: set -o pipefail; npm run build 2>&1 | tee build.log
+      - name: Start app and verify admin endpoints deny unauthenticated callers
+        run: |
+          set -o pipefail
+          npm run start > server.log 2>&1 &
+          for i in $(seq 1 40); do
+            curl -s -o /dev/null http://127.0.0.1:3000/ && break
+            sleep 1
+          done
+          npm run test:routes:unauth 2>&1 | tee route-auth.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-and-route-logs
+          path: |
+            build.log
+            server.log
+            route-auth.log
+          if-no-files-found: ignore
+
+  live-integration:
+    name: Live provider integration (manual only)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Integration tests (providers skip themselves when a secret is absent)
+        run: set -o pipefail; npm run test:ai-pastor:integration 2>&1 | tee integration.log
+        env:
+          BIBLE_API_KEY: ${{ secrets.BIBLE_API_KEY }}
+          BIBLE_TEST_TRANSLATION_ID: ${{ secrets.BIBLE_TEST_TRANSLATION_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-log
+          path: integration.log
+          if-no-files-found: ignore
