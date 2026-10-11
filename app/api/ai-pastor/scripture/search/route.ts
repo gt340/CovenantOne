@@ -35,6 +35,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ status: "NO_DEFAULT_TRANSLATION", results: [] }, { status: 503 });
   }
 
+  // Phase 18: admin-disabled translations are not served to members.
+  const { data: tr } = await supabase.from("bible_translations").select('"isEnabled"').eq("id", translation).maybeSingle();
+  if (tr && tr.isEnabled === false) {
+    return NextResponse.json({ status: "TRANSLATION_DISABLED", results: [] }, { status: 403 });
+  }
+
   const provider = getBibleProvider()!;
   const results = await provider.search(q, translation, 15);
   return NextResponse.json({ status: "OK", results });
