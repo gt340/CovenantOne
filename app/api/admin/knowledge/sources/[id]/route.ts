@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { validateRawContent, chunkText } from "@/lib/aiPastor/knowledgeIngestion";
+import { licenseChangeAudit } from "@/lib/aiPastor/knowledgeGovernance";
 
 const ADMIN_ROLES = ["ADMIN", "SUPER_ADMIN"];
 
@@ -55,8 +56,14 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 // PATCH — edit metadata/content. Editing an APPROVED (or archived) source
 // never changes it in place (§19: "prevent silent replacement of approved
 // production material") — it creates a new DRAFT version of the same
-// lineage instead, which must go through review again. Editing a DRAFT or
-// REJECTED source updates it directly, since nothing live depends on it yet.
+// lineage instead, which must go through review again. Editing a DRAFT,
+// UNDER_REVIEW or REJECTED source updates it directly, since nothing live
+// depends on it yet.
+//
+// Two-person rule: whoever last edits a version becomes its author
+// (uploaderUserId) and so cannot approve it. Editing a version that is
+// UNDER_REVIEW also returns it to DRAFT, because the review no longer covers
+// the edited content. Every licence-status change is audit-logged.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAdmin();
   if ("error" in auth) return auth.error;
@@ -87,10 +94,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     changes.contentCharCount = changes.rawContent.length;
   }
 
+  const licenseAudit = licenseChangeAudit(existing.licenseStatus, changes.licenseStatus);
   const needsNewVersion = existing.approvalStatus === "APPROVED" || existing.approvalStatus === "ARCHIVED";
 
   if (!needsNewVersion) {
-    const { data: updated, error } = await admin.from("knowledge_sources").update(changes).eq("id", id).select().single();
+    const previousAuthorUserId = existing.uploaderUserId;
+    const returnedToDraft = existing.approvalStatus === "UNDER_REVIEW" && Object.keys(changes).length > 0;
+    const update: Record<string, any> = { ...changes };
+    if (Object.keys(changes).length > 0) update.uploaderUserId = auth.user.id;
+    if (returnedToDraft) update.approvalStatus = "DRAFT";
+
+    const { data: updated, error } = await admin.from("knowledge_sources").update(update).eq("id", id).select().single();
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
     if (changes.rawContent !== undefined) {
@@ -103,9 +117,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     await admin.from("audit_logs").insert({
       actorUserId: auth.user.id, action: "KNOWLEDGE_SOURCE_EDITED", targetType: "knowledge_sources", targetId: id,
-      metadata: { changedFields: Object.keys(changes) },
+      metadata: { changedFields: Object.keys(changes), previousAuthorUserId, returnedToDraft },
     });
-    return NextResponse.json({ source: updated, newVersion: false });
+    if (licenseAudit) {
+      await admin.from("audit_logs").insert({
+        actorUserId: auth.user.id, action: "KNOWLEDGE_LICENSE_STATUS_CHANGED", targetType: "knowledge_sources", targetId: id,
+        metadata: licenseAudit,
+      });
+    }
+    return NextResponse.json({ source: updated, newVersion: false, returnedToDraft });
   }
 
   // Create a new version: copy forward unchanged fields, apply edits,
@@ -140,6 +160,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     actorUserId: auth.user.id, action: "KNOWLEDGE_SOURCE_NEW_VERSION_CREATED", targetType: "knowledge_sources", targetId: newVersion.id,
     metadata: { supersedesId: existing.id, version: newVersion.version },
   });
+  if (licenseAudit) {
+    await admin.from("audit_logs").insert({
+      actorUserId: auth.user.id, action: "KNOWLEDGE_LICENSE_STATUS_CHANGED", targetType: "knowledge_sources", targetId: newVersion.id,
+      metadata: licenseAudit,
+    });
+  }
 
   return NextResponse.json({ source: newVersion, newVersion: true, previousVersionId: existing.id }, { status: 201 });
 }
