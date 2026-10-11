@@ -6,6 +6,32 @@ import { getBibleProvider, bibleProviderStatus } from "@/lib/bibleProvider";
 
 const ADMIN_ROLES = ["ADMIN", "SUPER_ADMIN"];
 
+// GET: admin view of configured translations with governance metadata
+// (enabled flag, licence status, copyright notes) and provider status.
+export async function GET() {
+  const cookieStore = await cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { getAll() { return cookieStore.getAll(); }, setAll() {} } }
+  );
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const { data: profile } = await supabase.from("users").select("role").eq("id", user.id).single();
+  if (!profile || !ADMIN_ROLES.includes(profile.role)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  const [{ data: translations, error }, { data: settings }] = await Promise.all([
+    supabase.from("bible_translations").select("*").order("name", { ascending: true }),
+    supabase.from("ai_pastor_settings").select('"bibleDefaultTranslationId"').eq("id", true).single(),
+  ]);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({
+    providerStatus: bibleProviderStatus(),
+    defaultTranslationId: settings?.bibleDefaultTranslationId ?? null,
+    translations,
+  });
+}
+
 // POST: pulls the provider's real translation catalog and upserts it into
 // bible_translations, so the admin picks a default from what the provider
 // actually licenses to this API key. Nothing is invented locally.
@@ -30,6 +56,8 @@ export async function POST() {
     const admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
+    // Upsert only provider-owned columns: admin governance columns
+    // (isEnabled, licenseStatus, copyrightInfo, adminNotes) are preserved.
     const rows = translations.map((t) => ({
       id: t.id,
       provider: "API_BIBLE",
