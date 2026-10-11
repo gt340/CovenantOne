@@ -3,9 +3,6 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { getBibleProvider, bibleProviderStatus } from "@/lib/bibleProvider";
 
-// GET /api/ai-pastor/scripture/verse?ref=PRO.3.5&translation=...
-// Provider-native passage IDs (e.g. PRO.3.5). Returns 404 when the provider
-// says the reference doesn't exist — never a guess.
 export async function GET(request: NextRequest) {
   const cookieStore = await cookies();
   const supabase = createServerClient(
@@ -31,6 +28,12 @@ export async function GET(request: NextRequest) {
     translation = settings?.bibleDefaultTranslationId ?? null;
   }
   if (!translation) return NextResponse.json({ status: "NO_DEFAULT_TRANSLATION" }, { status: 503 });
+
+  // Phase 18: admin-disabled translations are not served to members.
+  const { data: tr } = await supabase.from("bible_translations").select('"isEnabled"').eq("id", translation).maybeSingle();
+  if (tr && tr.isEnabled === false) {
+    return NextResponse.json({ status: "TRANSLATION_DISABLED", error: "This translation is not currently available." }, { status: 403 });
+  }
 
   const verse = await getBibleProvider()!.getVerse(ref.toUpperCase(), translation);
   if (!verse) return NextResponse.json({ error: "Reference not found" }, { status: 404 });
