@@ -7,6 +7,7 @@ import { describeAll, getFallbackTextProvider, getTextProvider } from "@/lib/ai/
 import { getBibleProvider } from "@/lib/bibleProvider";
 import { decideMedia, type MediaMode } from "@/lib/aiPastor/mediaPolicy";
 import { enforceRateLimit, parseLimits } from "@/lib/aiPastor/rateLimit";
+import { createKnowledgeSearch, hashQuestion, summarizeSelected, type CapturedKnowledge } from "@/lib/aiPastor/knowledgeSearchDb";
 
 const MAX_MESSAGE_CHARS = 2000; // input-size cap: bounds the cost of any single request
 
@@ -92,6 +93,11 @@ export async function POST(request: NextRequest) {
   }));
 
   const fallback = getFallbackTextProvider(settings);
+  // Phase 18: approved-knowledge retrieval (member-facing sources only; the
+  // SQL function enforces APPROVED / current / not archived / licence gate).
+  // Results are captured so the retrieval event can be logged without a
+  // second query.
+  const capturedKnowledge: CapturedKnowledge[] = [];
   const result = await runAIPastorPipeline(
     {
       question: message,
@@ -99,7 +105,12 @@ export async function POST(request: NextRequest) {
       translationId: settings?.bibleDefaultTranslationId ?? null,
       theologicalProfile: settings?.theologicalProfile ?? null,
     },
-    { text: getTextProvider(settings), fallback: fallback?.provider ?? null, bible: getBibleProvider() }
+    {
+      text: getTextProvider(settings),
+      fallback: fallback?.provider ?? null,
+      bible: getBibleProvider(),
+      knowledge: createKnowledgeSearch(admin, { capture: capturedKnowledge }),
+    }
   );
 
   await supabase.from("ai_pastor_messages").insert({ conversationId, role: "USER", content: message });
@@ -138,6 +149,18 @@ export async function POST(request: NextRequest) {
       model: settings?.textModel ?? null,
       usedFallback: result.usedFallback,
     });
+    // Traceability (Phase 18 §17). Member questions are stored only as a
+    // hash — never the text — so this log cannot leak private conversation
+    // content to admins.
+    await admin.from("ai_pastor_retrieval_events").insert({
+      userId: user.id,
+      origin: "CHAT",
+      questionHash: hashQuestion(message),
+      questionText: null,
+      topic: result.topic,
+      consideredCount: capturedKnowledge.length,
+      selected: summarizeSelected(capturedKnowledge),
+    });
     if (result.safetyEvent.triggered) {
       await admin.from("ai_pastor_safety_events").insert({
         userId: user.id,
@@ -157,6 +180,7 @@ export async function POST(request: NextRequest) {
     response: result.text,
     topic: result.topic,
     citations: result.citations,
+    knowledgeSources: result.knowledgeSources,
     safetyNote: result.safetyEvent.triggered ? result.safetyEvent.note : null,
     configState: result.configState,
     providerUsed: result.providerUsed,
