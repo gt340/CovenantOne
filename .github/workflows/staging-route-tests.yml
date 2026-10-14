@@ -1,0 +1,62 @@
+# STAGING ONLY. Runs logged-in route tests against the Vercel Preview of
+# branch staging-route-tests, which is wired to the staging Supabase project.
+# No deploy step, no production credentials, no migration commands.
+name: Staging route tests
+
+on:
+  push:
+    branches: [staging-route-tests]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: read
+
+concurrency:
+  group: staging-route-tests
+  cancel-in-progress: false
+
+jobs:
+  staging-route-tests:
+    if: github.ref == 'refs/heads/staging-route-tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+      STAGING_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+      STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: Static check - service-role key never reaches client code
+        run: |
+          set -e
+          hits=$(grep -rl "SUPABASE_SERVICE_ROLE_KEY" app src 2>/dev/null || true)
+          echo "Files referencing SUPABASE_SERVICE_ROLE_KEY:"; echo "$hits"
+          bad=0
+          for f in $hits; do
+            if grep -qE "^[\"']use client[\"']" "$f"; then echo "CLIENT FILE USES SERVICE KEY: $f"; bad=1; fi
+          done
+          if grep -rE "NEXT_PUBLIC_[A-Z_]*SERVICE" app src .env.example 2>/dev/null; then echo "service key exposed via NEXT_PUBLIC_"; bad=1; fi
+          exit $bad
+
+      - name: Find the Vercel Preview URL for this exact commit
+        run: |
+          for i in $(seq 1 60); do
+            for id in $(gh api "repos/${GITHUB_REPOSITORY}/deployments?sha=${GITHUB_SHA}" --jq '.[].id'); do
+              url=$(gh api "repos/${GITHUB_REPOSITORY}/deployments/${id}/statuses" --jq '[.[] | select(.state=="success")][0].environment_url // empty')
+              if [ -n "$url" ]; then echo "PREVIEW_URL=$url" >> "$GITHUB_ENV"; echo "Preview ready: $url"; exit 0; fi
+            done
+            echo "waiting for preview deployment ($i/60)"; sleep 15
+          done
+          echo "preview never became ready"; exit 1
+
+      - name: Run staging route tests
+        run: node tests/staging/run-route-tests.mjs
