@@ -1,1 +1,1 @@
-Staging route test re-run after seeding fix (auth token columns set to empty strings on the 6 disposable staging accounts). No code change.
+Staging route test re-run with Vercel automation bypass secret configured (previews are behind Vercel Authentication). No code change.
