@@ -30,9 +30,9 @@ BEGIN
   END;
 
   SELECT id INTO protected_source FROM public.knowledge_sources
-    WHERE title='by-super' AND "approvalStatus"='APPROVED' AND "isCurrentProduction"=true
+    WHERE title='R_OK' AND "approvalStatus"='APPROVED' AND "isCurrentProduction"=true
     LIMIT 1;
-  IF protected_source IS NULL THEN RAISE EXCEPTION 'Fixture missing approved production source by-super'; END IF;
+  IF protected_source IS NULL THEN RAISE EXCEPTION 'Fixture missing approved production source R_OK'; END IF;
 
   BEGIN
     INSERT INTO public.knowledge_chunks ("sourceId","chunkIndex",content,"charCount")
