@@ -1,6 +1,6 @@
 // Logged-in route tests for Phase 18 approval governance. STAGING ONLY (see guard.mjs).
 // Secrets are read from the environment and never printed. Evidence rows go to public.route_test_results on staging.
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { enforceStagingOnly } from "./guard.mjs";
 
 enforceStagingOnly(); // exits with code 2 before any network call if anything is not staging
@@ -60,15 +60,17 @@ async function loginAll() {
     if (!u) throw new Abort("test account missing: " + k);
     const prof = await must(adm.from("users").select("role,status").eq("id", u.id).single(), "profile " + k);
     if (prof.role !== role || prof.status !== "ACTIVE") throw new Abort("test account " + k + " has wrong role/status");
-    const pw = randomBytes(18).toString("base64url");
-    await must(adm.auth.admin.updateUserById(u.id, { password: pw }), "set password " + k);
+    // Generate a one-time magic-link token for this staging test identity. Do not
+    // overwrite its password: test runs must not mutate account credentials.
+    const { data: link, error: linkError } = await adm.auth.admin.generateLink({ type: "magiclink", email });
+    if (linkError || !link?.properties?.hashed_token) throw new Abort("magic-link generation failed for " + k);
     const jar = new Map();
     const sb = createServerClient(SB, ANON, { cookies: {
       getAll: () => [...jar].map(([name, value]) => ({ name, value })),
       setAll: (list) => list.forEach((c) => (c.value ? jar.set(c.name, c.value) : jar.delete(c.name))),
     } });
-    const { data: s, error } = await sb.auth.signInWithPassword({ email, password: pw });
-    if (error) throw new Abort("sign-in failed for " + k + ": " + error.message);
+    const { data: s, error } = await sb.auth.verifyOtp({ token_hash: link.properties.hashed_token, type: "magiclink" });
+    if (error || !s.session) throw new Abort("magic-link verification failed for " + k + (error ? ": " + error.message : ""));
     acct[k] = { id: u.id, role, token: s.session.access_token, cookie: [...jar].map(([n, v]) => n + "=" + v).join("; ") };
   }
 }
@@ -79,6 +81,9 @@ async function mkSource(tag, authorId, { status = "UNDER_REVIEW", license = "LIC
     title: "ROUTETEST-" + RUN + "-" + tag, sourceType: "TEACHING", licenseStatus: license, trustLevel: "UNVERIFIED",
     rawContent: BODY_TEXT, contentCharCount: BODY_TEXT.length, approvalStatus: status, uploaderUserId: authorId,
   }).select().single(), "fixture " + tag);
+  // Register the source immediately: if chunk creation fails, finally must still
+  // know the source ID and remove this run's partial fixture.
+  created.push(src.id);
   await must(adm.from("knowledge_chunks").insert({ sourceId: src.id, chunkIndex: 0, content: BODY_TEXT.slice(0, 300), charCount: 300 }), "chunk " + tag);
   return src;
 }
@@ -87,12 +92,15 @@ const audit = (id, action) => must(adm.from("audit_logs").select('"actorUserId",
 const unchanged = (s) => s.approvalStatus === "UNDER_REVIEW" && !s.isCurrentProduction && !s.reviewedByUserId;
 
 const created = []; // source ids for cleanup
+const createdConversations = [];
+const createdMessages = [];
+const createdMemories = [];
 async function main() {
   await loginAll();
   const A = acct.A, B = acct.B, C = acct.C, S = acct.S, M = acct.M, N = acct.N;
 
   // ---- Preflight: prove the preview is wired to STAGING (URL, anon key AND service key) ----
-  const marker = await mkSource("PREFLIGHT", A.id, { status: "DRAFT" }); created.push(marker.id);
+  const marker = await mkSource("PREFLIGHT", A.id, { status: "DRAFT" });
   const p0 = await call("GET", "/api/admin/knowledge/sources");
   if (p0.status !== 401 || !p0.json) { rec("P0 app answers logged-out request with JSON 401", "401 JSON", p0.status + (p0.json ? " json" : " non-json (Vercel protection page?)"), false, { snippet: p0.snippet }); throw new Abort("preview not reachable by the app"); }
   rec("P0 app answers logged-out request with JSON 401", "401 JSON", "401 json", true);
@@ -101,9 +109,9 @@ async function main() {
   rec("P1 preview is backed by STAGING (staging admin session accepted AND staging-only marker row visible)", "200 + marker", p1.status + (sawMarker ? " marker seen" : " marker NOT seen"), sawMarker, { snippet: sawMarker ? "" : p1.snippet });
   if (!sawMarker) throw new Abort("preview is not using staging credentials");
 
-  const S1 = await mkSource("S1", A.id); created.push(S1.id);
-  const S2 = await mkSource("S2", A.id); created.push(S2.id);
-  const S5 = await mkSource("S5", A.id); created.push(S5.id);
+  const S1 = await mkSource("S1", A.id);
+  const S2 = await mkSource("S2", A.id);
+  const S5 = await mkSource("S5", A.id);
 
   // ---- T1 logged-out ----
   for (const [m, p, b] of [
@@ -190,8 +198,11 @@ async function main() {
   // ---- T7 privacy isolation ----
   for (const [k, who] of [["m", M], ["n", N]]) {
     const conv = await must(adm.from("ai_pastor_conversations").insert({ userId: who.id, title: "rt-private-" + RUN + "-" + k }).select().single(), "conv");
-    await must(adm.from("ai_pastor_messages").insert({ conversationId: conv.id, role: "USER", content: "private message " + k }), "msg");
-    await must(adm.from("ai_pastor_memory").insert({ userId: who.id, category: "USER_PREFERENCES", key: "rt-" + RUN, value: { note: "private-" + k } }), "mem");
+    createdConversations.push(conv.id);
+    const msg = await must(adm.from("ai_pastor_messages").insert({ conversationId: conv.id, role: "USER", content: "private message " + k }).select("id").single(), "msg");
+    createdMessages.push(msg.id);
+    const mem = await must(adm.from("ai_pastor_memory").insert({ userId: who.id, category: "USER_PREFERENCES", key: "rt-" + RUN, value: { note: "private-" + k } }).select("id").single(), "mem");
+    createdMemories.push(mem.id);
   }
   const len = (r) => (Array.isArray(r.json) ? r.json.length : "n/a");
   for (const [label, who] of [["ADMIN A", A], ["SUPER_ADMIN C", C]]) {
@@ -214,13 +225,47 @@ try { await main(); }
 catch (e) { exitCode = e instanceof Abort ? 3 : 4; rec("RUN ABORTED", "completes", (e instanceof Abort ? "aborted: " : "error: ") + String(e.message).slice(0, 200), false); }
 finally {
   try {
-    if (created.length) { await adm.from("audit_logs").delete().in("targetId", created).then((r) => { cleanup.auditDeleteError = r.error?.message || null; }); await adm.from("knowledge_sources").delete().in("id", created); }
-    const uids = Object.values(acct).map((a) => a.id);
-    if (uids.length) { await adm.from("ai_pastor_memory").delete().in("userId", uids); await adm.from("ai_pastor_conversations").delete().in("userId", uids); }
+    if (created.length) {
+      const auditDelete = await adm.from("audit_logs").delete().in("targetId", created);
+      cleanup.auditDeleteError = auditDelete.error?.message || null;
+      // Approved fixtures must first pass through the existing archive lifecycle;
+      // the security trigger correctly rejects direct deletion of live production rows.
+      const archive = await adm.from("knowledge_sources").update({ approvalStatus: "ARCHIVED" })
+        .in("id", created).eq("approvalStatus", "APPROVED");
+      cleanup.sourceArchiveError = archive.error?.message || null;
+      const sourceDelete = await adm.from("knowledge_sources").delete().in("id", created);
+      cleanup.sourceDeleteError = sourceDelete.error?.message || null;
+    }
+    // Delete only rows created by this run. Never purge all memory or conversations
+    // belonging to shared test accounts.
+    if (createdMessages.length) {
+      const r = await adm.from("ai_pastor_messages").delete().in("id", createdMessages);
+      cleanup.messagesDeleteError = r.error?.message || null;
+    }
+    if (createdMemories.length) {
+      const r = await adm.from("ai_pastor_memory").delete().in("id", createdMemories);
+      cleanup.memoriesDeleteError = r.error?.message || null;
+    }
+    if (createdConversations.length) {
+      const r = await adm.from("ai_pastor_conversations").delete().in("id", createdConversations);
+      cleanup.conversationsDeleteError = r.error?.message || null;
+    }
     const left = await adm.from("knowledge_sources").select("id", { count: "exact", head: true }).like("title", "ROUTETEST-" + RUN + "-%");
     cleanup.sourcesRemaining = left.count;
+    if (createdConversations.length) {
+      const remaining = await adm.from("ai_pastor_conversations").select("id", { count: "exact", head: true }).in("id", createdConversations);
+      cleanup.conversationsRemaining = remaining.count;
+    }
+    if (createdMemories.length) {
+      const remaining = await adm.from("ai_pastor_memory").select("id", { count: "exact", head: true }).in("id", createdMemories);
+      cleanup.memoriesRemaining = remaining.count;
+    }
+    if (createdMessages.length) {
+      const remaining = await adm.from("ai_pastor_messages").select("id", { count: "exact", head: true }).in("id", createdMessages);
+      cleanup.messagesRemaining = remaining.count;
+    }
   } catch (e) { cleanup.error = String(e.message).slice(0, 120); }
-  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 test sources remain", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0, detail: cleanup });
+  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 run-created test rows remain; shared accounts unchanged", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0 && (cleanup.conversationsRemaining ?? 0) === 0 && (cleanup.memoriesRemaining ?? 0) === 0 && (cleanup.messagesRemaining ?? 0) === 0 && !cleanup.error && !cleanup.auditDeleteError && !cleanup.sourceArchiveError && !cleanup.sourceDeleteError && !cleanup.messagesDeleteError && !cleanup.memoriesDeleteError && !cleanup.conversationsDeleteError, detail: cleanup });
   const ins = await adm.from("route_test_results").insert(results);
   console.log(ins.error ? "could not write results: " + ins.error.message : "results written to route_test_results (run " + RUN + ")");
   console.log(failures + " failure(s) of " + results.length + " checks");
