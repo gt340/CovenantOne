@@ -62,6 +62,13 @@ BEGIN
     IF SQLERRM NOT LIKE 'APPROVED_SOURCE_CHUNKS_IMMUTABLE%' THEN RAISE; END IF;
   END;
 
+  BEGIN
+    DELETE FROM public.knowledge_chunks WHERE "sourceId" = protected_source;
+    RAISE EXCEPTION 'FAIL: chunk DELETE for approved source was allowed';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'APPROVED_SOURCE_CHUNKS_IMMUTABLE%' THEN RAISE; END IF;
+  END;
+
   INSERT INTO public.ai_pastor_conversations (id,"userId",title)
   VALUES ('10000000-0000-0000-0000-000000000001',member_m,'private member M'),
          ('10000000-0000-0000-0000-000000000002',member_n,'private member N')
@@ -90,7 +97,7 @@ BEGIN
   -- A member can read their own conversation/message but not another member's.
   PERFORM set_config('request.jwt.claims', json_build_object('sub',member_m,'role','authenticated')::text,true);
   SET LOCAL ROLE authenticated;
-  SELECT count(*) INTO n FROM public.ai_pastor_conversations WHERE "userId"=member_m;
+  SELECT count(*) INTO n FROM public.ai_pastor_conversations WHERE title='private member M';
   IF n <> 1 THEN RAISE EXCEPTION 'FAIL: member cannot read own conversation'; END IF;
   SELECT count(*) INTO n FROM public.ai_pastor_messages WHERE content='private message M';
   IF n <> 1 THEN RAISE EXCEPTION 'FAIL: member cannot read own message'; END IF;
