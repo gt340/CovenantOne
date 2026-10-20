@@ -88,7 +88,10 @@ const getSrc = (id) => must(adm.from("knowledge_sources").select('"approvalStatu
 const audit = (id, action) => must(adm.from("audit_logs").select('"actorUserId", action, metadata, "createdAt"').eq("targetId", id).eq("action", action).gte("createdAt", T0).order("createdAt"), "audit");
 const unchanged = (s) => s.approvalStatus === "UNDER_REVIEW" && !s.isCurrentProduction && !s.reviewedByUserId;
 
-const created = []; // source ids for cleanup\nconst createdConversations = [];\nconst createdMessages = [];\nconst createdMemories = [];
+const created = []; // source ids for cleanup
+const createdConversations = [];
+const createdMessages = [];
+const createdMemories = [];
 async function main() {
   await loginAll();
   const A = acct.A, B = acct.B, C = acct.C, S = acct.S, M = acct.M, N = acct.N;
