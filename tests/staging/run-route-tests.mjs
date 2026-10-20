@@ -222,6 +222,11 @@ finally {
     if (created.length) {
       const auditDelete = await adm.from("audit_logs").delete().in("targetId", created);
       cleanup.auditDeleteError = auditDelete.error?.message || null;
+      // Approved fixtures must first pass through the existing archive lifecycle;
+      // the security trigger correctly rejects direct deletion of live production rows.
+      const archive = await adm.from("knowledge_sources").update({ approvalStatus: "ARCHIVED" })
+        .in("id", created).eq("approvalStatus", "APPROVED");
+      cleanup.sourceArchiveError = archive.error?.message || null;
       const sourceDelete = await adm.from("knowledge_sources").delete().in("id", created);
       cleanup.sourceDeleteError = sourceDelete.error?.message || null;
     }
@@ -254,7 +259,7 @@ finally {
       cleanup.messagesRemaining = remaining.count;
     }
   } catch (e) { cleanup.error = String(e.message).slice(0, 120); }
-  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 run-created test rows remain; shared accounts unchanged", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0 && (cleanup.conversationsRemaining ?? 0) === 0 && (cleanup.memoriesRemaining ?? 0) === 0 && (cleanup.messagesRemaining ?? 0) === 0 && !cleanup.error && !cleanup.auditDeleteError && !cleanup.sourceDeleteError && !cleanup.messagesDeleteError && !cleanup.memoriesDeleteError && !cleanup.conversationsDeleteError, detail: cleanup });
+  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 run-created test rows remain; shared accounts unchanged", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0 && (cleanup.conversationsRemaining ?? 0) === 0 && (cleanup.memoriesRemaining ?? 0) === 0 && (cleanup.messagesRemaining ?? 0) === 0 && !cleanup.error && !cleanup.auditDeleteError && !cleanup.sourceArchiveError && !cleanup.sourceDeleteError && !cleanup.messagesDeleteError && !cleanup.memoriesDeleteError && !cleanup.conversationsDeleteError, detail: cleanup });
   const ins = await adm.from("route_test_results").insert(results);
   console.log(ins.error ? "could not write results: " + ins.error.message : "results written to route_test_results (run " + RUN + ")");
   console.log(failures + " failure(s) of " + results.length + " checks");
