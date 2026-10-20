@@ -29,6 +29,18 @@ BEGIN
     IF SQLERRM NOT LIKE 'SOURCE_REVIEW_REQUIRED%' THEN RAISE; END IF;
   END;
 
+  -- A plain flag flip must not make a draft source production eligible.
+  INSERT INTO public.knowledge_sources
+    (title, "sourceType", "licenseStatus", "rawContent", "uploaderUserId")
+  VALUES ('SECURITY_TEST_DRAFT_FLAG','TEACHING','LICENSE_VERIFIED','test',admin_a);
+  BEGIN
+    UPDATE public.knowledge_sources SET "isCurrentProduction"=true
+      WHERE title='SECURITY_TEST_DRAFT_FLAG';
+    RAISE EXCEPTION 'FAIL: direct current-production flag update was allowed';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'SOURCE_REVIEW_REQUIRED%' THEN RAISE; END IF;
+  END;
+
   SELECT id INTO protected_source FROM public.knowledge_sources
     WHERE title='R_OK' AND "approvalStatus"='APPROVED' AND "isCurrentProduction"=true
     LIMIT 1;
