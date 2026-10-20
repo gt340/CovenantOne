@@ -12,7 +12,7 @@ CREATE OR REPLACE FUNCTION private.guard_knowledge_source_insert()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path TO 'public', 'private'
+SET search_path TO 'pg_catalog', 'public', 'private'
 AS $function$
 BEGIN
   IF NEW."approvalStatus" = 'APPROVED' OR NEW."isCurrentProduction" = true THEN
@@ -81,7 +81,7 @@ CREATE OR REPLACE FUNCTION private.guard_knowledge_source_current_flag()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path TO 'public', 'private'
+SET search_path TO 'pg_catalog', 'public', 'private'
 AS $function$
 BEGIN
   IF NEW."isCurrentProduction" = true
@@ -105,7 +105,7 @@ CREATE OR REPLACE FUNCTION private.guard_approved_knowledge_chunk_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path TO 'public', 'private'
+SET search_path TO 'pg_catalog', 'public', 'private'
 AS $function$
 DECLARE
   old_source_protected boolean := false;
