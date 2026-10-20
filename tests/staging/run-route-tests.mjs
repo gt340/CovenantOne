@@ -60,15 +60,17 @@ async function loginAll() {
     if (!u) throw new Abort("test account missing: " + k);
     const prof = await must(adm.from("users").select("role,status").eq("id", u.id).single(), "profile " + k);
     if (prof.role !== role || prof.status !== "ACTIVE") throw new Abort("test account " + k + " has wrong role/status");
-    const pw = randomBytes(18).toString("base64url");
-    await must(adm.auth.admin.updateUserById(u.id, { password: pw }), "set password " + k);
+    // Generate a one-time magic-link token for this staging test identity. Do not
+    // overwrite its password: test runs must not mutate account credentials.
+    const { data: link, error: linkError } = await adm.auth.admin.generateLink({ type: "magiclink", email });
+    if (linkError || !link?.properties?.hashed_token) throw new Abort("magic-link generation failed for " + k);
     const jar = new Map();
     const sb = createServerClient(SB, ANON, { cookies: {
       getAll: () => [...jar].map(([name, value]) => ({ name, value })),
       setAll: (list) => list.forEach((c) => (c.value ? jar.set(c.name, c.value) : jar.delete(c.name))),
     } });
-    const { data: s, error } = await sb.auth.signInWithPassword({ email, password: pw });
-    if (error) throw new Abort("sign-in failed for " + k + ": " + error.message);
+    const { data: s, error } = await sb.auth.verifyOtp({ token_hash: link.properties.hashed_token, type: "magiclink" });
+    if (error || !s.session) throw new Abort("magic-link verification failed for " + k + (error ? ": " + error.message : ""));
     acct[k] = { id: u.id, role, token: s.session.access_token, cookie: [...jar].map(([n, v]) => n + "=" + v).join("; ") };
   }
 }
@@ -86,7 +88,7 @@ const getSrc = (id) => must(adm.from("knowledge_sources").select('"approvalStatu
 const audit = (id, action) => must(adm.from("audit_logs").select('"actorUserId", action, metadata, "createdAt"').eq("targetId", id).eq("action", action).gte("createdAt", T0).order("createdAt"), "audit");
 const unchanged = (s) => s.approvalStatus === "UNDER_REVIEW" && !s.isCurrentProduction && !s.reviewedByUserId;
 
-const created = []; // source ids for cleanup
+const created = []; // source ids for cleanup\nconst createdConversations = [];\nconst createdMessages = [];\nconst createdMemories = [];
 async function main() {
   await loginAll();
   const A = acct.A, B = acct.B, C = acct.C, S = acct.S, M = acct.M, N = acct.N;
@@ -190,8 +192,11 @@ async function main() {
   // ---- T7 privacy isolation ----
   for (const [k, who] of [["m", M], ["n", N]]) {
     const conv = await must(adm.from("ai_pastor_conversations").insert({ userId: who.id, title: "rt-private-" + RUN + "-" + k }).select().single(), "conv");
-    await must(adm.from("ai_pastor_messages").insert({ conversationId: conv.id, role: "USER", content: "private message " + k }), "msg");
-    await must(adm.from("ai_pastor_memory").insert({ userId: who.id, category: "USER_PREFERENCES", key: "rt-" + RUN, value: { note: "private-" + k } }), "mem");
+    createdConversations.push(conv.id);
+    const msg = await must(adm.from("ai_pastor_messages").insert({ conversationId: conv.id, role: "USER", content: "private message " + k }).select("id").single(), "msg");
+    createdMessages.push(msg.id);
+    const mem = await must(adm.from("ai_pastor_memory").insert({ userId: who.id, category: "USER_PREFERENCES", key: "rt-" + RUN, value: { note: "private-" + k } }).select("id").single(), "mem");
+    createdMemories.push(mem.id);
   }
   const len = (r) => (Array.isArray(r.json) ? r.json.length : "n/a");
   for (const [label, who] of [["ADMIN A", A], ["SUPER_ADMIN C", C]]) {
@@ -215,12 +220,36 @@ catch (e) { exitCode = e instanceof Abort ? 3 : 4; rec("RUN ABORTED", "completes
 finally {
   try {
     if (created.length) { await adm.from("audit_logs").delete().in("targetId", created).then((r) => { cleanup.auditDeleteError = r.error?.message || null; }); await adm.from("knowledge_sources").delete().in("id", created); }
-    const uids = Object.values(acct).map((a) => a.id);
-    if (uids.length) { await adm.from("ai_pastor_memory").delete().in("userId", uids); await adm.from("ai_pastor_conversations").delete().in("userId", uids); }
+    // Delete only rows created by this run. Never purge all memory or conversations
+    // belonging to shared test accounts.
+    if (createdMessages.length) {
+      const r = await adm.from("ai_pastor_messages").delete().in("id", createdMessages);
+      cleanup.messagesDeleteError = r.error?.message || null;
+    }
+    if (createdMemories.length) {
+      const r = await adm.from("ai_pastor_memory").delete().in("id", createdMemories);
+      cleanup.memoriesDeleteError = r.error?.message || null;
+    }
+    if (createdConversations.length) {
+      const r = await adm.from("ai_pastor_conversations").delete().in("id", createdConversations);
+      cleanup.conversationsDeleteError = r.error?.message || null;
+    }
     const left = await adm.from("knowledge_sources").select("id", { count: "exact", head: true }).like("title", "ROUTETEST-" + RUN + "-%");
     cleanup.sourcesRemaining = left.count;
+    if (createdConversations.length) {
+      const remaining = await adm.from("ai_pastor_conversations").select("id", { count: "exact", head: true }).in("id", createdConversations);
+      cleanup.conversationsRemaining = remaining.count;
+    }
+    if (createdMemories.length) {
+      const remaining = await adm.from("ai_pastor_memory").select("id", { count: "exact", head: true }).in("id", createdMemories);
+      cleanup.memoriesRemaining = remaining.count;
+    }
+    if (createdMessages.length) {
+      const remaining = await adm.from("ai_pastor_messages").select("id", { count: "exact", head: true }).in("id", createdMessages);
+      cleanup.messagesRemaining = remaining.count;
+    }
   } catch (e) { cleanup.error = String(e.message).slice(0, 120); }
-  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 test sources remain", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0, detail: cleanup });
+  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 run-created test rows remain; shared accounts unchanged", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0 && (cleanup.conversationsRemaining ?? 0) === 0 && (cleanup.memoriesRemaining ?? 0) === 0 && (cleanup.messagesRemaining ?? 0) === 0 && !cleanup.error && !cleanup.auditDeleteError && !cleanup.messagesDeleteError && !cleanup.memoriesDeleteError && !cleanup.conversationsDeleteError, detail: cleanup });
   const ins = await adm.from("route_test_results").insert(results);
   console.log(ins.error ? "could not write results: " + ins.error.message : "results written to route_test_results (run " + RUN + ")");
   console.log(failures + " failure(s) of " + results.length + " checks");
