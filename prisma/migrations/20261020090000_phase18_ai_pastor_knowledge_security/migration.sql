@@ -28,6 +28,44 @@ CREATE TRIGGER trg_knowledge_source_insert_guard
   FOR EACH ROW EXECUTE FUNCTION private.guard_knowledge_source_insert();
 
 
+
+-- Protect approved/current source rows themselves, not only their chunks.
+-- The only permitted in-place mutation of a protected source is the internal
+-- retirement of its production flag when a newer version is approved by the
+-- existing approval trigger. All content changes must create a new version.
+CREATE OR REPLACE FUNCTION private.guard_approved_knowledge_source_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path TO 'pg_catalog', 'public', 'private'
+AS $function$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD."approvalStatus" = 'APPROVED' OR OLD."isCurrentProduction" = true THEN
+      RAISE EXCEPTION 'APPROVED_SOURCE_IMMUTABLE: approved/current knowledge sources cannot be deleted; create a new version instead';
+    END IF;
+    RETURN OLD;
+  END IF;
+
+  IF OLD."approvalStatus" = 'APPROVED' OR OLD."isCurrentProduction" = true THEN
+    IF pg_catalog.pg_trigger_depth() > 1
+       AND OLD."isCurrentProduction" = true
+       AND NEW."isCurrentProduction" = false
+       AND (to_jsonb(NEW) - ARRAY['isCurrentProduction','updatedAt'])
+           = (to_jsonb(OLD) - ARRAY['isCurrentProduction','updatedAt']) THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'APPROVED_SOURCE_IMMUTABLE: approved/current knowledge sources cannot be edited in place; create a new version instead';
+  END IF;
+
+  RETURN NEW;
+END
+$function$;
+
+DROP TRIGGER IF EXISTS trg_guard_approved_knowledge_source_mutation ON public.knowledge_sources;
+CREATE TRIGGER trg_guard_approved_knowledge_source_mutation
+  BEFORE UPDATE OR DELETE ON public.knowledge_sources
+  FOR EACH ROW EXECUTE FUNCTION private.guard_approved_knowledge_source_mutation();
+
 -- Prevent an UPDATE from directly promoting an unapproved source by toggling
 -- isCurrentProduction without performing the guarded APPROVED transition.
 CREATE OR REPLACE FUNCTION private.guard_knowledge_source_current_flag()
