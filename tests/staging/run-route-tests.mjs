@@ -81,6 +81,9 @@ async function mkSource(tag, authorId, { status = "UNDER_REVIEW", license = "LIC
     title: "ROUTETEST-" + RUN + "-" + tag, sourceType: "TEACHING", licenseStatus: license, trustLevel: "UNVERIFIED",
     rawContent: BODY_TEXT, contentCharCount: BODY_TEXT.length, approvalStatus: status, uploaderUserId: authorId,
   }).select().single(), "fixture " + tag);
+  // Register the source immediately: if chunk creation fails, finally must still
+  // know the source ID and remove this run's partial fixture.
+  created.push(src.id);
   await must(adm.from("knowledge_chunks").insert({ sourceId: src.id, chunkIndex: 0, content: BODY_TEXT.slice(0, 300), charCount: 300 }), "chunk " + tag);
   return src;
 }
@@ -97,7 +100,7 @@ async function main() {
   const A = acct.A, B = acct.B, C = acct.C, S = acct.S, M = acct.M, N = acct.N;
 
   // ---- Preflight: prove the preview is wired to STAGING (URL, anon key AND service key) ----
-  const marker = await mkSource("PREFLIGHT", A.id, { status: "DRAFT" }); created.push(marker.id);
+  const marker = await mkSource("PREFLIGHT", A.id, { status: "DRAFT" });
   const p0 = await call("GET", "/api/admin/knowledge/sources");
   if (p0.status !== 401 || !p0.json) { rec("P0 app answers logged-out request with JSON 401", "401 JSON", p0.status + (p0.json ? " json" : " non-json (Vercel protection page?)"), false, { snippet: p0.snippet }); throw new Abort("preview not reachable by the app"); }
   rec("P0 app answers logged-out request with JSON 401", "401 JSON", "401 json", true);
@@ -106,9 +109,9 @@ async function main() {
   rec("P1 preview is backed by STAGING (staging admin session accepted AND staging-only marker row visible)", "200 + marker", p1.status + (sawMarker ? " marker seen" : " marker NOT seen"), sawMarker, { snippet: sawMarker ? "" : p1.snippet });
   if (!sawMarker) throw new Abort("preview is not using staging credentials");
 
-  const S1 = await mkSource("S1", A.id); created.push(S1.id);
-  const S2 = await mkSource("S2", A.id); created.push(S2.id);
-  const S5 = await mkSource("S5", A.id); created.push(S5.id);
+  const S1 = await mkSource("S1", A.id);
+  const S2 = await mkSource("S2", A.id);
+  const S5 = await mkSource("S5", A.id);
 
   // ---- T1 logged-out ----
   for (const [m, p, b] of [
