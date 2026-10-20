@@ -55,9 +55,9 @@ BEGIN
   END;
 
   BEGIN
-    UPDATE public.knowledge_sources SET "approvalStatus"='ARCHIVED'
+    UPDATE public.knowledge_sources SET "approvalStatus"='REJECTED'
       WHERE id=protected_source;
-    RAISE EXCEPTION 'FAIL: direct approved-source archival was allowed';
+    RAISE EXCEPTION 'FAIL: direct approved-source status mutation was allowed';
   EXCEPTION WHEN raise_exception THEN
     IF SQLERRM NOT LIKE 'APPROVED_SOURCE_IMMUTABLE%' THEN RAISE; END IF;
   END;
