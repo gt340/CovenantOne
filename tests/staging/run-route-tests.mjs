@@ -1,6 +1,6 @@
 // Logged-in route tests for Phase 18 approval governance. STAGING ONLY (see guard.mjs).
 // Secrets are read from the environment and never printed. Evidence rows go to public.route_test_results on staging.
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { enforceStagingOnly } from "./guard.mjs";
 
 enforceStagingOnly(); // exits with code 2 before any network call if anything is not staging
@@ -219,7 +219,12 @@ try { await main(); }
 catch (e) { exitCode = e instanceof Abort ? 3 : 4; rec("RUN ABORTED", "completes", (e instanceof Abort ? "aborted: " : "error: ") + String(e.message).slice(0, 200), false); }
 finally {
   try {
-    if (created.length) { await adm.from("audit_logs").delete().in("targetId", created).then((r) => { cleanup.auditDeleteError = r.error?.message || null; }); await adm.from("knowledge_sources").delete().in("id", created); }
+    if (created.length) {
+      const auditDelete = await adm.from("audit_logs").delete().in("targetId", created);
+      cleanup.auditDeleteError = auditDelete.error?.message || null;
+      const sourceDelete = await adm.from("knowledge_sources").delete().in("id", created);
+      cleanup.sourceDeleteError = sourceDelete.error?.message || null;
+    }
     // Delete only rows created by this run. Never purge all memory or conversations
     // belonging to shared test accounts.
     if (createdMessages.length) {
@@ -249,7 +254,7 @@ finally {
       cleanup.messagesRemaining = remaining.count;
     }
   } catch (e) { cleanup.error = String(e.message).slice(0, 120); }
-  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 run-created test rows remain; shared accounts unchanged", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0 && (cleanup.conversationsRemaining ?? 0) === 0 && (cleanup.memoriesRemaining ?? 0) === 0 && (cleanup.messagesRemaining ?? 0) === 0 && !cleanup.error && !cleanup.auditDeleteError && !cleanup.messagesDeleteError && !cleanup.memoriesDeleteError && !cleanup.conversationsDeleteError, detail: cleanup });
+  results.push({ run_id: RUN, seq: results.length + 1, name: "CLEANUP", expected: "0 run-created test rows remain; shared accounts unchanged", actual: JSON.stringify(cleanup), passed: cleanup.sourcesRemaining === 0 && (cleanup.conversationsRemaining ?? 0) === 0 && (cleanup.memoriesRemaining ?? 0) === 0 && (cleanup.messagesRemaining ?? 0) === 0 && !cleanup.error && !cleanup.auditDeleteError && !cleanup.sourceDeleteError && !cleanup.messagesDeleteError && !cleanup.memoriesDeleteError && !cleanup.conversationsDeleteError, detail: cleanup });
   const ins = await adm.from("route_test_results").insert(results);
   console.log(ins.error ? "could not write results: " + ins.error.message : "results written to route_test_results (run " + RUN + ")");
   console.log(failures + " failure(s) of " + results.length + " checks");
