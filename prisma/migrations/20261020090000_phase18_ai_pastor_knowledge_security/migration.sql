@@ -27,6 +27,30 @@ CREATE TRIGGER trg_knowledge_source_insert_guard
   BEFORE INSERT ON public.knowledge_sources
   FOR EACH ROW EXECUTE FUNCTION private.guard_knowledge_source_insert();
 
+
+-- Prevent an UPDATE from directly promoting an unapproved source by toggling
+-- isCurrentProduction without performing the guarded APPROVED transition.
+CREATE OR REPLACE FUNCTION private.guard_knowledge_source_current_flag()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public', 'private'
+AS $function$
+BEGIN
+  IF NEW."isCurrentProduction" = true
+     AND OLD."isCurrentProduction" IS DISTINCT FROM true
+     AND OLD."approvalStatus" IS NOT DISTINCT FROM NEW."approvalStatus" THEN
+    RAISE EXCEPTION 'SOURCE_REVIEW_REQUIRED: production eligibility must be established by the guarded approval transition';
+  END IF;
+  RETURN NEW;
+END
+$function$;
+
+DROP TRIGGER IF EXISTS trg_guard_knowledge_source_current_flag ON public.knowledge_sources;
+CREATE TRIGGER trg_guard_knowledge_source_current_flag
+  BEFORE UPDATE ON public.knowledge_sources
+  FOR EACH ROW EXECUTE FUNCTION private.guard_knowledge_source_current_flag();
+
 -- Once a source is approved/current, chunks are immutable. Changes must be
 -- published as a new source version, then approved by a different administrator.
 -- Allow FK-driven cascade deletion when a source itself is deleted.
