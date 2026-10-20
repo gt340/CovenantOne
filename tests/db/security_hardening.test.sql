@@ -47,6 +47,29 @@ BEGIN
   IF protected_source IS NULL THEN RAISE EXCEPTION 'Fixture missing approved production source R_OK'; END IF;
 
   BEGIN
+    UPDATE public.knowledge_sources SET title='mutated approved source'
+      WHERE id=protected_source;
+    RAISE EXCEPTION 'FAIL: approved source UPDATE was allowed';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'APPROVED_SOURCE_IMMUTABLE%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    UPDATE public.knowledge_sources SET "approvalStatus"='ARCHIVED'
+      WHERE id=protected_source;
+    RAISE EXCEPTION 'FAIL: direct approved-source archival was allowed';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'APPROVED_SOURCE_IMMUTABLE%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    DELETE FROM public.knowledge_sources WHERE id=protected_source;
+    RAISE EXCEPTION 'FAIL: approved source DELETE was allowed';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'APPROVED_SOURCE_IMMUTABLE%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
     INSERT INTO public.knowledge_chunks ("sourceId","chunkIndex",content,"charCount")
     VALUES (protected_source, 99001, 'security test chunk', 19);
     RAISE EXCEPTION 'FAIL: chunk INSERT for approved source was allowed';
