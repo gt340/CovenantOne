@@ -47,6 +47,15 @@ BEGIN
   END IF;
 
   IF OLD."approvalStatus" = 'APPROVED' OR OLD."isCurrentProduction" = true THEN
+    -- Preserve the existing archive lifecycle, but permit no content/provenance
+    -- edits alongside it. The established approval trigger sets archive metadata.
+    IF NEW."approvalStatus" = 'ARCHIVED'
+       AND (to_jsonb(NEW) - ARRAY['approvalStatus','isCurrentProduction','updatedAt','archivedAt','reviewedAt'])
+           = (to_jsonb(OLD) - ARRAY['approvalStatus','isCurrentProduction','updatedAt','archivedAt','reviewedAt']) THEN
+      RETURN NEW;
+    END IF;
+
+    -- The existing approval trigger may retire an older version internally.
     IF pg_catalog.pg_trigger_depth() > 1
        AND OLD."isCurrentProduction" = true
        AND NEW."isCurrentProduction" = false
